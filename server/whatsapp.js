@@ -1,0 +1,1619 @@
+const express = require("express");
+const router = express.Router();
+
+// Configuration
+const API_KEY = process.env.WHATSAPP_API_KEY || "vR39h6avY69g7kAU3YQbS6V6XEvudson";
+const BASE_URL = (process.env.WHATSAPP_API_URL || "https://evo.infispark.in").replace(/\/$/, "");
+const FIREBASE_DB_URL = (process.env.FIREBASE_DATABASE_URL || process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL || "https://vintexair-f074c-default-rtdb.firebaseio.com").replace(/\/$/, "");
+const FIREBASE_DB_SECRET = process.env.FIREBASE_DB_SECRET || process.env.FIREBASE_DATABASE_SECRET || "";
+
+/**
+ * Firebase Realtime Database REST API Helper
+ */
+async function firebaseDb(path, method = "GET", body = null) {
+  try {
+    const authQuery = FIREBASE_DB_SECRET ? `?auth=${encodeURIComponent(FIREBASE_DB_SECRET)}` : "";
+    const url = `${FIREBASE_DB_URL}/${path}.json${authQuery}`;
+    const options = {
+      method,
+      headers: { "Content-Type": "application/json" },
+    };
+    if (body && method !== "GET") {
+      options.body = JSON.stringify(body);
+    }
+    const res = await fetch(url, options);
+    if (!res.ok) {
+      console.error(`Firebase DB Error (${res.status}):`, await res.text());
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    console.error("Firebase DB Helper Exception:", err);
+    return null;
+  }
+}
+
+/**
+ * Evolution API Helper
+ */
+async function evoApiCall(endpoint, method = "GET", body = null, customHeaders = {}) {
+  try {
+    const url = `${BASE_URL}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
+    const headers = {
+      apikey: API_KEY,
+      "Content-Type": "application/json",
+      ...customHeaders,
+    };
+    const options = { method, headers };
+    if (body && method !== "GET") {
+      options.body = JSON.stringify(body);
+    }
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    return { status: res.status, ok: res.ok, data };
+  } catch (err) {
+    console.error(`Evolution API Error (${endpoint}):`, err);
+    return { status: 500, ok: false, data: { error: err.message } };
+  }
+}
+
+/**
+ * Helper to normalize instance status from Evolution API response
+ */
+function normalizeInstanceStatus(evoData, fallbackStatus = "created") {
+  if (!evoData || typeof evoData !== "object") return fallbackStatus;
+
+  const rawStateVal =
+    (typeof evoData.connectionStatus === "string" ? evoData.connectionStatus : null) ||
+    (typeof evoData.status === "string" ? evoData.status : null) ||
+    (typeof evoData.state === "string" ? evoData.state : null) ||
+    (typeof evoData.instance?.status === "string" ? evoData.instance.status : null) ||
+    (typeof evoData.instance?.state === "string" ? evoData.instance.state : null) ||
+    (typeof evoData.connection?.state === "string" ? evoData.connection.state : null) ||
+    (typeof evoData.connectionStatus === "number" ? String(evoData.connectionStatus) : null) ||
+    "";
+
+  const rawState = String(rawStateVal).toLowerCase();
+
+  if (
+    rawState === "open" ||
+    rawState === "connected" ||
+    rawState === "paired" ||
+    rawState === "connecting_open" ||
+    evoData.owner ||
+    evoData.profilePictureUrl
+  ) {
+    return "open";
+  }
+
+  if (rawState === "connecting" || rawState === "qrcode" || rawState === "pairing") {
+    return "connecting";
+  }
+
+  if (rawState === "close" || rawState === "closed" || rawState === "disconnected" || rawState === "refused") {
+    return "close";
+  }
+
+  return fallbackStatus;
+}
+
+/**
+ * Sanitize phone numbers to international standard format (e.g. 919876543210)
+ */
+function sanitizePhoneNumber(number) {
+  if (!number) return "";
+  let clean = String(number).replace(/\D/g, "");
+  // Default to India prefix (91) if 10 digits provided
+  if (clean.length === 10) {
+    clean = "91" + clean;
+  }
+  return clean;
+}
+
+/* ==========================================================================
+   ROUTES FOR WHATSAPP MANAGEMENT
+   ========================================================================== */
+
+/**
+ * 1. Create Instance (With Already Configured / 403 Graceful Handling)/**
+ * POST /api/whatsapp/instance/create
+ * Body: { instanceName: "customer1", number: "919876543210" }
+ */
+router.post("/instance/create", async (req, res) => {
+  try {
+    const { instanceName, number, phone } = req.body;
+    if (!instanceName || typeof instanceName !== "string" || !instanceName.trim()) {
+      return res.status(400).json({ success: false, error: "Valid instanceName is required" });
+    }
+
+    const cleanInstanceName = instanceName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    const cleanPhone = sanitizePhoneNumber(number || phone || "");
+
+    // Check if instance record already exists in Firebase RTDB
+    const existingFb = await firebaseDb(`whatsapp_unofficial_instances/${cleanInstanceName}`);
+    if (existingFb && (existingFb.instanceId || existingFb.status)) {
+      if (cleanPhone && (!existingFb.number || existingFb.number !== cleanPhone)) {
+        await firebaseDb(`whatsapp_unofficial_instances/${cleanInstanceName}`, "PATCH", { number: cleanPhone });
+      }
+      return res.status(200).json({
+        success: true,
+        isAlreadyConfigured: true,
+        message: `Instance '${cleanInstanceName}' is already created & configured.`,
+        data: { ...existingFb, number: cleanPhone || existingFb.number },
+      });
+    }
+
+    // Call Evolution API /instance/create
+    const evoPayload = {
+      instanceName: cleanInstanceName,
+      qrcode: true,
+      integration: "WHATSAPP-BAILEYS",
+    };
+    if (cleanPhone) {
+      evoPayload.number = cleanPhone;
+    }
+
+    const evoRes = await evoApiCall("/instance/create", "POST", evoPayload);
+
+    // Handle Evolution API 403 / 400 / Already Exists responses gracefully
+    if (!evoRes.ok) {
+      const errMsg = String(evoRes.data?.error || evoRes.data?.message || evoRes.data?.response?.message || "").toLowerCase();
+
+      if (
+        evoRes.status === 403 ||
+        evoRes.status === 400 ||
+        errMsg.includes("already") ||
+        errMsg.includes("exist") ||
+        errMsg.includes("forbidden")
+      ) {
+        const instanceId = evoRes.data?.instanceId || evoRes.data?.id || cleanInstanceName;
+        const instanceRecord = {
+          instanceId,
+          instanceName: cleanInstanceName,
+          number: cleanPhone || null,
+          token: "",
+          status: "created",
+          qrCode: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        await firebaseDb(`whatsapp_unofficial_instances/${cleanInstanceName}`, "PUT", instanceRecord);
+
+        return res.status(200).json({
+          success: true,
+          isAlreadyConfigured: true,
+          message: `Instance '${cleanInstanceName}' is already created & configured on Evolution API.`,
+          data: instanceRecord,
+        });
+      }
+
+      return res.status(evoRes.status).json({
+        success: false,
+        error: evoRes.data?.error || evoRes.data?.message || "Failed to create instance on Evolution API",
+      });
+    }
+
+    const instanceId = evoRes.data.instanceId || evoRes.data.id || evoRes.data.instance?.instanceId || cleanInstanceName;
+    const token = evoRes.data.token || evoRes.data.hash || "";
+
+    const instanceRecord = {
+      instanceId,
+      instanceName: cleanInstanceName,
+      number: cleanPhone || null,
+      token,
+      status: "created",
+      qrCode: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Save to Firebase RTDB under /whatsapp_unofficial_instances
+    await firebaseDb(`whatsapp_unofficial_instances/${cleanInstanceName}`, "PUT", instanceRecord);
+
+    return res.status(200).json({
+      success: true,
+      isAlreadyConfigured: false,
+      message: "Instance created successfully",
+      data: instanceRecord,
+      raw: evoRes.data,
+    });
+  } catch (err) {
+    console.error("Create Instance Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/whatsapp/instance/connect/:instanceName
+ * OpenAPI GET /instance/connect/{instanceName}
+ */
+router.get("/instance/connect/:instanceName", async (req, res) => {
+  try {
+    const { instanceName } = req.params;
+    const { number, phone } = req.query;
+    const cleanInstanceName = instanceName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+
+    const queryParams = (number || phone) ? `?number=${sanitizePhoneNumber(number || phone)}` : "";
+    const evoRes = await evoApiCall(`/instance/connect/${cleanInstanceName}${queryParams}`, "GET");
+
+    let qrCodeBase64 = null;
+    let pairingCode = null;
+
+    if (evoRes.data) {
+      qrCodeBase64 =
+        evoRes.data.base64 ||
+        evoRes.data.qrcode ||
+        evoRes.data.data?.qrcode ||
+        evoRes.data.data?.base64 ||
+        evoRes.data.code ||
+        null;
+
+      pairingCode = evoRes.data.pairingCode || evoRes.data.data?.pairingCode || null;
+    }
+
+    const connState = normalizeInstanceStatus(evoRes.data);
+    const finalStatus = (connState === "open" || (!qrCodeBase64 && evoRes.ok)) ? "open" : "connecting";
+
+    const formattedQr = qrCodeBase64 ? (qrCodeBase64.startsWith("data:") ? qrCodeBase64 : `data:image/png;base64,${qrCodeBase64}`) : null;
+
+    await firebaseDb(`whatsapp_unofficial_instances/${cleanInstanceName}`, "PATCH", {
+      status: finalStatus,
+      qrCode: finalStatus === "open" ? null : formattedQr,
+      pairingCode: pairingCode || null,
+      updatedAt: new Date().toISOString(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      instanceName: cleanInstanceName,
+      status: finalStatus,
+      qrCode: formattedQr,
+      pairingCode: pairingCode || null,
+      data: evoRes.data,
+    });
+  } catch (err) {
+    console.error("GET Instance Connect Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 2. Connect Instance (Generate QR Code or Detect Already Open)
+ * POST /api/whatsapp/instance/connect
+ * Body: { instanceName: "customer1", instanceId: "..." }
+ */
+router.post("/instance/connect", async (req, res) => {
+  try {
+    const { instanceName, instanceId } = req.body;
+    if (!instanceName && !instanceId) {
+      return res.status(400).json({ success: false, error: "instanceName or instanceId is required" });
+    }
+
+    let targetInstanceName = instanceName;
+    let targetInstanceId = instanceId;
+
+    if (targetInstanceName && !targetInstanceId) {
+      const fbRecord = await firebaseDb(`whatsapp_unofficial_instances/${targetInstanceName}`);
+      if (fbRecord && fbRecord.instanceId) {
+        targetInstanceId = fbRecord.instanceId;
+      }
+    }
+
+    // Call Connect endpoint on Evolution API
+    const evoRes = await evoApiCall(
+      "/instance/connect",
+      "POST",
+      { subscribe: ["ALL"], immediate: true },
+      targetInstanceId ? { instanceId: targetInstanceId } : {}
+    );
+
+    // Check if Evolution API indicates already connected
+    const connState = normalizeInstanceStatus(evoRes.data);
+    
+    let qrCodeBase64 = null;
+    if (evoRes.data) {
+      qrCodeBase64 =
+        evoRes.data.qrcode ||
+        evoRes.data.base64 ||
+        evoRes.data.data?.qrcode ||
+        evoRes.data.code ||
+        null;
+    }
+
+    const finalStatus = (connState === "open" || (!qrCodeBase64 && evoRes.ok)) ? "open" : "connecting";
+
+    const updateData = {
+      status: finalStatus,
+      qrCode: finalStatus === "open" ? null : (qrCodeBase64 ? (qrCodeBase64.startsWith("data:") ? qrCodeBase64 : `data:image/png;base64,${qrCodeBase64}`) : null),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (targetInstanceName) {
+      await firebaseDb(`whatsapp_unofficial_instances/${targetInstanceName}`, "PATCH", updateData);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: finalStatus === "open" ? "Instance is connected and active" : "Connect request initiated",
+      status: finalStatus,
+      qrCode: updateData.qrCode || null,
+      data: evoRes.data,
+    });
+  } catch (err) {
+    console.error("Connect Instance Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 3. Get Instance Status / List All Instances
+ * GET /api/whatsapp/instance/list
+ */
+router.get("/instance/list", async (req, res) => {
+  try {
+    const evoRes = await evoApiCall("/instance/list", "GET");
+    const evoInstances = Array.isArray(evoRes.data) ? evoRes.data : [];
+
+    const fbInstances = (await firebaseDb("whatsapp_unofficial_instances")) || {};
+
+    const mergedList = [];
+
+    for (const [key, record] of Object.entries(fbInstances)) {
+      if (!record) continue;
+      const match = evoInstances.find(
+        (e) => e.instanceName === record.instanceName || e.instanceId === record.instanceId
+      );
+
+      let status = record.status;
+      if (match) {
+        status = normalizeInstanceStatus(match, record.status);
+      }
+
+      if (status === "open" && record.qrCode) {
+        await firebaseDb(`whatsapp_unofficial_instances/${record.instanceName}`, "PATCH", {
+          status: "open",
+          qrCode: null,
+          updatedAt: new Date().toISOString(),
+        });
+      } else if (status !== record.status) {
+        await firebaseDb(`whatsapp_unofficial_instances/${record.instanceName}`, "PATCH", {
+          status,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
+      mergedList.push({
+        ...record,
+        status,
+        qrCode: status === "open" ? null : record.qrCode,
+        liveMatch: !!match,
+      });
+    }
+
+    for (const evoInst of evoInstances) {
+      const exists = mergedList.some((m) => m.instanceName === evoInst.instanceName);
+      if (!exists) {
+        const normStatus = normalizeInstanceStatus(evoInst, "created");
+        mergedList.push({
+          instanceId: evoInst.instanceId || evoInst.id || evoInst.instanceName,
+          instanceName: evoInst.instanceName,
+          status: normStatus,
+          qrCode: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      count: mergedList.length,
+      data: mergedList,
+    });
+  } catch (err) {
+    console.error("List Instances Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 4. Get Connection State of a Specific Instance
+ * GET /api/whatsapp/instance/connection-state/:instanceName
+ */
+router.get("/instance/connection-state/:instanceName", async (req, res) => {
+  try {
+    const { instanceName } = req.params;
+
+    const evoRes = await evoApiCall(`/instance/connectionState/${instanceName}`, "GET");
+    const normStatus = normalizeInstanceStatus(evoRes.data, "open");
+
+    await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+      status: normStatus,
+      qrCode: normStatus === "open" ? null : undefined,
+      updatedAt: new Date().toISOString(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      instanceName,
+      status: normStatus,
+      raw: evoRes.data,
+    });
+  } catch (err) {
+    console.error("Connection State Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 5. Send Text Message
+ * POST /api/whatsapp/message/send-text
+ */
+router.post("/message/send-text", async (req, res) => {
+  try {
+    const { instanceName, number, text } = req.body;
+    if (!instanceName || !number || !text) {
+      return res.status(400).json({
+        success: false,
+        error: "instanceName, number, and text are required fields",
+      });
+    }
+
+    const cleanNumber = sanitizePhoneNumber(number);
+
+    const evoRes = await evoApiCall(`/message/sendText/${instanceName}`, "POST", {
+      number: cleanNumber,
+      text,
+    });
+
+    if (!evoRes.ok) {
+      return res.status(evoRes.status).json({
+        success: false,
+        error: evoRes.data.error || evoRes.data.message || "Failed to send text message",
+      });
+    }
+
+    await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+      status: "open",
+      qrCode: null,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const logId = `log_${Date.now()}`;
+    await firebaseDb(`whatsapp_logs/${instanceName}/${logId}`, "PUT", {
+      id: logId,
+      type: "text",
+      number: cleanNumber,
+      text,
+      status: "sent",
+      timestamp: new Date().toISOString(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Text message sent successfully",
+      data: evoRes.data,
+    });
+  } catch (err) {
+    console.error("Send Text Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 6. Send Media
+ * POST /api/whatsapp/message/send-media
+ */
+router.post("/message/send-media", async (req, res) => {
+  try {
+    const { instanceName, number, media, caption } = req.body;
+    if (!instanceName || !number || !media) {
+      return res.status(400).json({
+        success: false,
+        error: "instanceName, number, and media URL are required fields",
+      });
+    }
+
+    const cleanNumber = sanitizePhoneNumber(number);
+
+    const evoRes = await evoApiCall(`/message/sendMedia/${instanceName}`, "POST", {
+      number: cleanNumber,
+      media,
+      caption: caption || "",
+    });
+
+    if (!evoRes.ok) {
+      return res.status(evoRes.status).json({
+        success: false,
+        error: evoRes.data.error || evoRes.data.message || "Failed to send media message",
+      });
+    }
+
+    await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+      status: "open",
+      qrCode: null,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const logId = `log_${Date.now()}`;
+    await firebaseDb(`whatsapp_logs/${instanceName}/${logId}`, "PUT", {
+      id: logId,
+      type: "media",
+      number: cleanNumber,
+      mediaUrl: media,
+      caption: caption || "",
+      status: "sent",
+      timestamp: new Date().toISOString(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Media message sent successfully",
+      data: evoRes.data,
+    });
+  } catch (err) {
+    console.error("Send Media Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 7. Logout Instance
+ * DELETE /api/whatsapp/instance/logout/:instanceId
+ */
+router.delete("/instance/logout/:instanceId", async (req, res) => {
+  try {
+    const { instanceId } = req.params;
+    const { instanceName } = req.query;
+
+    const evoRes = await evoApiCall(`/instance/logout/${instanceId}`, "DELETE");
+
+    const targetName = instanceName || instanceId;
+    await firebaseDb(`whatsapp_unofficial_instances/${targetName}`, "PATCH", {
+      status: "close",
+      qrCode: null,
+      updatedAt: new Date().toISOString(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Instance logged out successfully",
+      data: evoRes.data,
+    });
+  } catch (err) {
+    console.error("Logout Instance Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 8. Delete Instance
+ * DELETE /api/whatsapp/instance/delete/:instanceId
+ */
+router.delete("/instance/delete/:instanceId", async (req, res) => {
+  try {
+    const { instanceId } = req.params;
+    const { instanceName } = req.query;
+
+    const evoRes = await evoApiCall(`/instance/delete/${instanceId}`, "DELETE");
+
+    const targetName = instanceName || instanceId;
+    await firebaseDb(`whatsapp_unofficial_instances/${targetName}`, "DELETE");
+
+    return res.status(200).json({
+      success: true,
+      message: "Instance deleted successfully",
+      data: evoRes.data,
+    });
+  } catch (err) {
+    console.error("Delete Instance Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 9. Get WhatsApp Lead Workflow Configuration (Step 1 Contact, Step 2 Survey, Step 3 Meeting)
+ * GET /api/whatsapp/config
+ */
+router.get("/config", async (req, res) => {
+  try {
+    const config = (await firebaseDb("whatsapp_configuration/firstoptionagency")) || {};
+    const defaultConfig = {
+      selectedInstanceName: config.selectedInstanceName || "",
+      defaultMeetingUrl: config.defaultMeetingUrl || "https://meet.google.com/firstoption-strategy-call",
+      step1Welcome: {
+        isEnabled: config.step1Welcome?.isEnabled !== undefined ? config.step1Welcome.isEnabled : (config.isEnabled !== undefined ? config.isEnabled : true),
+        template: config.step1Welcome?.template || config.welcomeMessageTemplate || "Hello {{name}}, thank you for contacting First Option Agency! We have received your contact details (Email: {{email}}, Phone: {{phone}}). Our team will get back to you shortly.",
+      },
+      step2Survey: {
+        isEnabled: config.step2Survey?.isEnabled !== undefined ? config.step2Survey.isEnabled : true,
+        template: config.step2Survey?.template || "Hello {{name}}, thank you for completing our qualification survey! Your answers have been recorded. Proceed to select a meeting time slot to complete your booking.",
+      },
+      step3Meeting: {
+        isEnabled: config.step3Meeting?.isEnabled !== undefined ? config.step3Meeting.isEnabled : true,
+        template: config.step3Meeting?.template || "🎉 Meeting Confirmed! Hello {{name}}, your strategy session with First Option Agency is booked for {{date}} at {{time}}. Click here to join your video call: {{meeting_url}}",
+      },
+    };
+    return res.status(200).json({ success: true, data: defaultConfig });
+  } catch (err) {
+    console.error("Get Config Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 10. Save WhatsApp Lead Workflow Configuration
+ * POST /api/whatsapp/config
+ */
+router.post("/config", async (req, res) => {
+  try {
+    const { selectedInstanceName, defaultMeetingUrl, step1Welcome, step2Survey, step3Meeting } = req.body;
+    const configPayload = {
+      selectedInstanceName: selectedInstanceName || "",
+      defaultMeetingUrl: defaultMeetingUrl || "https://meet.google.com/firstoption-strategy-call",
+      step1Welcome: {
+        isEnabled: step1Welcome?.isEnabled !== false,
+        template: step1Welcome?.template || "Hello {{name}}, thank you for contacting First Option Agency! We have received your contact details (Email: {{email}}, Phone: {{phone}}). Our team will get back to you shortly.",
+      },
+      step2Survey: {
+        isEnabled: step2Survey?.isEnabled !== false,
+        template: step2Survey?.template || "Hello {{name}}, thank you for completing our qualification survey! Your answers have been recorded. Proceed to select a meeting time slot to complete your booking.",
+      },
+      step3Meeting: {
+        isEnabled: step3Meeting?.isEnabled !== false,
+        template: step3Meeting?.template || "🎉 Meeting Confirmed! Hello {{name}}, your strategy session with First Option Agency is booked for {{date}} at {{time}}. Click here to join your video call: {{meeting_url}}",
+      },
+      updatedAt: new Date().toISOString(),
+    };
+
+    await firebaseDb("whatsapp_configuration/firstoptionagency", "PUT", configPayload);
+
+    return res.status(200).json({
+      success: true,
+      message: "WhatsApp configurations saved successfully",
+      data: configPayload,
+    });
+  } catch (err) {
+    console.error("Save Config Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * REUSABLE MODULAR SERVER HELPER:
+ * Atomically updates lead pipelineStage, status, and meeting attributes across Firebase RTDB.
+ * Eliminates duplicate inline database patch queries and ensures 100% accurate CRM stage progression.
+ *
+ * @param {Object} params
+ * @param {string} params.phone - Client phone number
+ * @param {string} params.email - Client email address
+ * @param {string} [params.pipelineStage] - New CRM pipeline stage (e.g., "meeting_scheduled", "survey_completed")
+ * @param {string} [params.status] - New lead status ("partial", "survey_completed", "completed")
+ * @param {string} [params.meetingDate] - Booked appointment date (YYYY-MM-DD)
+ * @param {string} [params.meetingTime] - Booked time slot (e.g. "02:00 PM")
+ * @param {string} [params.meetingUrl] - Meeting URL (static Google Meet link)
+ * @param {string} [params.campaignName] - Target campaign name ("firstoptionagency")
+ */
+async function updateLeadStageInFirebase({
+  phone,
+  email,
+  pipelineStage,
+  status,
+  meetingDate,
+  meetingTime,
+  meetingUrl,
+  campaignName = "firstoptionagency",
+}) {
+  try {
+    const cleanPhoneNum = phone ? sanitizePhoneNumber(phone) : "";
+    const cleanEmailStr = email ? email.toLowerCase().trim() : "";
+    const emailPrefix = cleanEmailStr ? cleanEmailStr.split("@")[0].replace(/[^a-z0-9_]/gi, "_") : "";
+    const timestamp = new Date().toISOString();
+
+    const STAGE_WEIGHTS = {
+      raw: 1,
+      "1st Connection": 2,
+      in_progress: 2,
+      survey_completed: 3,
+      meeting_booked: 4,
+      meeting_scheduled: 4,
+      proposal_sent: 5,
+      won: 6,
+      closed_won: 6,
+      not_qualified: 7,
+      disqualified: 7,
+      lost: 7,
+    };
+
+    const STATUS_WEIGHTS = {
+      partial: 1,
+      survey_completed: 2,
+      completed: 3,
+    };
+
+    const campaignsObj = (await firebaseDb("campaigns")) || {};
+    for (const [cKey, campaignData] of Object.entries(campaignsObj)) {
+      if (!campaignData || typeof campaignData !== "object") continue;
+      const leadsNode = campaignData.leads || {};
+
+      for (const [dKey, leadsDateGroup] of Object.entries(leadsNode)) {
+        if (!leadsDateGroup || typeof leadsDateGroup !== "object") continue;
+
+        // Clean up orphan root nodes if improperly created
+        if (emailPrefix && dKey === emailPrefix) {
+          await firebaseDb(`campaigns/${cKey}/leads/${dKey}`, "DELETE");
+          continue;
+        }
+
+        for (const [lId, leadObj] of Object.entries(leadsDateGroup)) {
+          if (leadObj && typeof leadObj === "object") {
+            const lEmail = (leadObj.email || "").toLowerCase().trim();
+            const lPhone = sanitizePhoneNumber(leadObj.phone);
+
+            if (
+              (cleanEmailStr && lEmail === cleanEmailStr) ||
+              (cleanPhoneNum && lPhone === cleanPhoneNum) ||
+              (emailPrefix && lId.includes(emailPrefix))
+            ) {
+              const currentStage = leadObj.pipelineStage;
+              const currentStageWeight = STAGE_WEIGHTS[currentStage] || 0;
+              const newStageWeight = STAGE_WEIGHTS[pipelineStage] || 0;
+              const isDownstreamManual = currentStageWeight >= 5;
+
+              const patchPayload = { updatedAt: timestamp };
+
+              if (pipelineStage) {
+                // If lead is in a downstream manual sales stage (proposal_sent, won, not_qualified), preserve it unless manual update
+                if (!isDownstreamManual || newStageWeight >= 5) {
+                  if (newStageWeight >= currentStageWeight || !currentStage) {
+                    patchPayload.pipelineStage = pipelineStage;
+                    if (currentStage !== pipelineStage) {
+                      patchPayload.stageMovedAt = timestamp;
+                    }
+                  }
+                }
+              }
+
+              if (status) {
+                const currentStatusWeight = STATUS_WEIGHTS[leadObj.status] || 0;
+                const newStatusWeight = STATUS_WEIGHTS[status] || 0;
+                if (newStatusWeight >= currentStatusWeight) {
+                  patchPayload.status = status;
+                }
+              }
+
+              // Atomically update lead stage and status in Firebase RTDB
+              await firebaseDb(`campaigns/${cKey}/leads/${dKey}/${lId}`, "PATCH", patchPayload);
+
+              // Update meeting details if provided
+              if (meetingDate || meetingTime || meetingUrl) {
+                const meetingPatch = { bookedAt: timestamp };
+                if (meetingDate) meetingPatch.meetingDate = meetingDate;
+                if (meetingTime) meetingPatch.meetingTime = meetingTime;
+                if (meetingUrl) meetingPatch.meetingUrl = meetingUrl;
+
+                await firebaseDb(`campaigns/${cKey}/leads/${dKey}/${lId}/meeting`, "PATCH", meetingPatch);
+              }
+            }
+          }
+        }
+      }
+
+      // Also update top-level meeting index if date is provided
+      if (meetingDate && campaignData.meetings && campaignData.meetings[meetingDate]) {
+        const meetingsDateGroup = campaignData.meetings[meetingDate];
+        for (const [lId, mObj] of Object.entries(meetingsDateGroup)) {
+          if (mObj && typeof mObj === "object") {
+            const mEmail = (mObj.email || "").toLowerCase().trim();
+            const mPhone = sanitizePhoneNumber(mObj.phone);
+            if (
+              (cleanEmailStr && mEmail === cleanEmailStr) ||
+              (cleanPhoneNum && mPhone === cleanPhoneNum) ||
+              (emailPrefix && lId.includes(emailPrefix))
+            ) {
+              const meetingPatch = { updatedAt: timestamp };
+              if (meetingTime) meetingPatch.meetingTime = meetingTime;
+              if (meetingUrl) meetingPatch.meetingUrl = meetingUrl;
+              if (pipelineStage) {
+                meetingPatch.pipelineStage = pipelineStage;
+              }
+              if (status) {
+                meetingPatch.status = status;
+              }
+
+              await firebaseDb(`campaigns/${cKey}/meetings/${meetingDate}/${lId}`, "PATCH", meetingPatch);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[updateLeadStageInFirebase Exception]:", err);
+  }
+}
+
+/**
+ * Helper to send Official Meta WhatsApp Cloud API Notifications to Founders Array ok
+ */
+async function sendMetaCloudApiFounderNotification({ fullName, email, phone, bookingTime }) {
+  try {
+    const phoneNumberId = process.env.META_WA_PHONE_NUMBER_ID || "1256030487590811";
+    const accessToken = process.env.META_WA_ACCESS_TOKEN || "EAAxIo8W1d1YBSLFZAZC7I2NKjBGLpIu7xZAZAhsZC1Biy3wbAc2t92kpZAaYiPdprUegE1RMPY6lgdZCzyrX6htgc9FpaoJtNdTDJZAZBTxTllKGqgqMRCxqmVod8U12veudujp5l2G6DVRATh0Uk4UwMl8zAXZB4QZBKlSED7e5XiW0wliSnHouSoxj8AADDOhHsX54wZDZD";
+    const rawFounderNumbers = process.env.META_WA_FOUNDER_NUMBERS || "919958399157";
+    const templateName = process.env.META_WA_TEMPLATE_NAME || "new_lead_founder_alert";
+    const headerImageUrl = process.env.META_WA_HEADER_IMAGE_URL || "https://raw.githubusercontent.com/infisparks/images/refs/heads/main/new_lead.png";
+    const templateLang = process.env.META_WA_TEMPLATE_LANG || "en";
+
+    if (!accessToken || !phoneNumberId) {
+      console.warn("⚠️ Meta WhatsApp Cloud API credentials not fully configured in server/.env");
+      return { success: false, error: "Meta WhatsApp credentials missing" };
+    }
+
+    const founderNumbers = rawFounderNumbers
+      .split(",")
+      .map((num) => num.replace(/\D/g, ""))
+      .filter((num) => num.length >= 10);
+
+    if (founderNumbers.length === 0) {
+      console.warn("⚠️ No founder phone numbers configured in META_WA_FOUNDER_NUMBERS");
+      return { success: false, error: "No founder numbers configured" };
+    }
+
+    const formattedTime =
+      bookingTime ||
+      new Date().toLocaleTimeString("en-US", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit", hour12: true });
+    const url = `https://graph.facebook.com/v23.0/${phoneNumberId}/messages`;
+
+    // Construct components array for Meta Cloud API matching exact template specification
+    const components = [];
+
+    // Header image component (required if template has Media -> Image header)
+    if (headerImageUrl) {
+      components.push({
+        type: "header",
+        parameters: [
+          {
+            type: "image",
+            image: { link: headerImageUrl },
+          },
+        ],
+      });
+    }
+
+    // Body parameters component for named template variables (lead_name, phone_number, email_address, booking_time)
+    components.push({
+      type: "body",
+      parameters: [
+        { type: "text", parameter_name: "lead_name", text: fullName || "Valued Client" },
+        { type: "text", parameter_name: "phone_number", text: phone || "N/A" },
+        { type: "text", parameter_name: "email_address", text: email || "N/A" },
+        { type: "text", parameter_name: "booking_time", text: formattedTime },
+      ],
+    });
+
+    const results = await Promise.allSettled(
+      founderNumbers.map(async (founderNumber) => {
+        // 1. First try sending Official Meta WhatsApp Template
+        const templatePayload = {
+          messaging_product: "whatsapp",
+          to: founderNumber,
+          type: "template",
+          template: {
+            name: templateName,
+            language: { code: templateLang },
+            components,
+          },
+        };
+
+        let res = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(templatePayload),
+        });
+
+        let responseData = await res.json();
+
+        if (res.ok) {
+          console.log(`✅ Meta Template '${templateName}' sent successfully to ${founderNumber}`);
+          return { number: founderNumber, success: true, data: responseData };
+        }
+
+        console.error(`❌ Meta Template '${templateName}' failed for ${founderNumber}:`, JSON.stringify(responseData));
+
+        // 2. Fallback: If template name/language mismatch or unapproved, send standard Meta Text notification
+        const textPayload = {
+          messaging_product: "whatsapp",
+          to: founderNumber,
+          type: "text",
+          text: {
+            body: `🚨 *NEW APPOINTMENT LEAD ALERT!* 🚀\n\nA new lead has just filled out the appointment booking form!\n\n👤 *Lead Name:* ${fullName || "N/A"}\n📞 *Phone:* ${phone || "N/A"}\n📧 *Email:* ${email || "N/A"}\n🕒 *Time:* ${formattedTime}\n\n⚡ *Action Required:* Call or WhatsApp this client directly to confirm!`,
+          },
+        };
+
+        res = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(textPayload),
+        });
+        responseData = await res.json();
+        return { number: founderNumber, success: res.ok, fallback: true, data: responseData };
+      })
+    );
+
+    console.log("📱 Founder Meta WhatsApp Notifications Result:", results);
+    return { success: true, results };
+  } catch (err) {
+    console.error("sendMetaCloudApiFounderNotification Exception:", err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * 10b. Endpoint to manually or custom trigger Founder Meta Notifications
+ * POST /api/whatsapp/notify-founders
+ */
+router.post("/notify-founders", async (req, res) => {
+  try {
+    const { fullName, email, phone, date, time } = req.body;
+    const bookingTime = date && time ? `${date} at ${time}` : new Date().toLocaleTimeString("en-US", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit", hour12: true });
+    const result = await sendMetaCloudApiFounderNotification({ fullName, email, phone, bookingTime });
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error("Notify Founders Endpoint Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Helper to resolve active instance name
+ */
+async function resolveActiveInstance(preferredInstance) {
+  if (preferredInstance) return preferredInstance;
+  const fbInstances = (await firebaseDb("whatsapp_unofficial_instances")) || {};
+  const instancesList = Object.values(fbInstances).filter(Boolean);
+  const openInst = instancesList.find((i) => i.status === "open") || instancesList[0];
+  return openInst ? openInst.instanceName : null;
+}
+
+/**
+ * 11. Automated Send Welcome WhatsApp Message for Lead Popup Step 1
+ * POST /api/whatsapp/auto-send-welcome
+ */
+router.post("/auto-send-welcome", async (req, res) => {
+  try {
+    const { fullName, email, phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: "Phone number is required" });
+
+    // Asynchronously trigger Meta WhatsApp Cloud API notification to all Founders (non-blocking)
+    sendMetaCloudApiFounderNotification({ fullName, email, phone }).catch((err) =>
+      console.error("Async Founder Notification Exception:", err)
+    );
+
+    const config = (await firebaseDb("whatsapp_configuration/firstoptionagency")) || {};
+    const stepConfig = config.step1Welcome || { isEnabled: config.isEnabled !== false, template: config.welcomeMessageTemplate };
+
+    if (stepConfig.isEnabled === false) {
+      return res.status(200).json({ success: false, disabled: true, message: "Step 1 WhatsApp welcome is disabled." });
+    }
+
+    const instanceName = await resolveActiveInstance(config.selectedInstanceName);
+    if (!instanceName) return res.status(400).json({ success: false, error: "No active WhatsApp instance available." });
+
+    let rawTemplate = stepConfig.template || "Hello {{name}}, thank you for contacting First Option Agency! We have received your contact details (Email: {{email}}, Phone: {{phone}}). Our team will get back to you shortly.";
+    const formattedMessage = rawTemplate
+      .replace(/\{\{\s*name\s*\}\}/gi, fullName || "Valued Client")
+      .replace(/\{\{\s*email\s*\}\}/gi, email || "N/A")
+      .replace(/\{\{\s*phone\s*\}\}/gi, phone || "N/A");
+
+    const cleanNumber = sanitizePhoneNumber(phone);
+    const evoRes = await evoApiCall(`/message/sendText/${instanceName}`, "POST", { number: cleanNumber, text: formattedMessage });
+
+    if (evoRes.ok) {
+      await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", { status: "open", qrCode: null, updatedAt: new Date().toISOString() });
+      const logId = `auto_welcome_${Date.now()}`;
+      await firebaseDb(`whatsapp_logs/${instanceName}/${logId}`, "PUT", { id: logId, type: "auto_welcome", number: cleanNumber, text: formattedMessage, status: "sent", timestamp: new Date().toISOString() });
+    }
+
+    return res.status(200).json({ success: evoRes.ok, message: evoRes.ok ? "Welcome message sent" : "Send failed", data: evoRes.data });
+  } catch (err) {
+    console.error("Auto Send Welcome Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 12. Automated Send WhatsApp Message for Lead Popup Step 2 (Survey Completed)
+ * POST /api/whatsapp/auto-send-survey
+ */
+router.post("/auto-send-survey", async (req, res) => {
+  try {
+    const { fullName, email, phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: "Phone number is required" });
+
+    const cleanNumber = sanitizePhoneNumber(phone);
+
+    // Atomically patch pipelineStage: "survey_completed", status: "survey_completed", and stageMovedAt in Firebase RTDB
+    if (email || phone) {
+      await updateLeadStageInFirebase({
+        phone: cleanNumber,
+        email,
+        pipelineStage: "survey_completed",
+        status: "survey_completed",
+      });
+    }
+
+    const config = (await firebaseDb("whatsapp_configuration/firstoptionagency")) || {};
+    const stepConfig = config.step2Survey || { isEnabled: true };
+
+    // Purge pending message queues from Step 1 (1st Connection)
+    try {
+      const { cancelAllLeadTasks, syncLeadAutomations } = require("./whatsapp_pipeline_stage_configuration");
+      await cancelAllLeadTasks(cleanNumber);
+      syncLeadAutomations(
+        { fullName, email, phone: cleanNumber, pipelineStage: "survey_completed", status: "survey_completed" },
+        "in_progress"
+      ).catch(() => {});
+    } catch (err) {
+      console.error("[Auto Send Survey] Task queue purge exception:", err);
+    }
+
+    if (stepConfig.isEnabled === false) {
+      return res.status(200).json({ success: false, disabled: true, message: "Step 2 Survey WhatsApp message is disabled." });
+    }
+
+    const instanceName = await resolveActiveInstance(config.selectedInstanceName);
+    if (!instanceName) return res.status(400).json({ success: false, error: "No active WhatsApp instance available." });
+
+    let rawTemplate = stepConfig.template || "Hello {{name}}, thank you for completing our qualification survey! Your answers have been recorded. Proceed to select a meeting time slot to complete your booking.";
+    const formattedMessage = rawTemplate
+      .replace(/\{\{\s*name\s*\}\}/gi, fullName || "Valued Client")
+      .replace(/\{\{\s*email\s*\}\}/gi, email || "N/A")
+      .replace(/\{\{\s*phone\s*\}\}/gi, phone || "N/A");
+
+    const evoRes = await evoApiCall(`/message/sendText/${instanceName}`, "POST", { number: cleanNumber, text: formattedMessage });
+
+    if (evoRes.ok) {
+      await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", { status: "open", qrCode: null, updatedAt: new Date().toISOString() });
+      const logId = `auto_survey_${Date.now()}`;
+      await firebaseDb(`whatsapp_logs/${instanceName}/${logId}`, "PUT", { id: logId, type: "auto_survey", number: cleanNumber, text: formattedMessage, status: "sent", timestamp: new Date().toISOString() });
+    }
+
+    return res.status(200).json({ success: evoRes.ok, message: evoRes.ok ? "Survey message sent" : "Send failed", data: evoRes.data });
+  } catch (err) {
+    console.error("Auto Send Survey Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 13. Automated Send WhatsApp Message for Lead Popup Step 3/4 (Calendar Meeting Booked)
+ * POST /api/whatsapp/auto-send-meeting
+ */
+router.post("/auto-send-meeting", async (req, res) => {
+  try {
+    const { fullName, email, phone, date, time, meetingUrl } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: "Phone number is required" });
+
+    const cleanNumber = sanitizePhoneNumber(phone);
+
+    const config = (await firebaseDb("whatsapp_configuration/firstoptionagency")) || {};
+    const stepConfig = config.step3Meeting || { isEnabled: true, sendWithCard: true };
+
+    const { createUniqueGoogleMeetEvent } = require("./google_calendar");
+    let autoUniqueUrl = null;
+    try {
+      autoUniqueUrl = await createUniqueGoogleMeetEvent({ fullName, email, dateStr: date, timeStr: time });
+    } catch (gErr) {
+      console.error("Google Meet creation error:", gErr);
+    }
+    const resolvedMeetingUrl = meetingUrl || autoUniqueUrl || config.defaultMeetingUrl || "https://meet.google.com/firstoption-strategy-call";
+
+    // Asynchronously send Meta Cloud API alert to founders when meeting is scheduled
+    const meetingTimeStr = date && time ? `${date} at ${time}` : null;
+    sendMetaCloudApiFounderNotification({ fullName, email, phone, bookingTime: meetingTimeStr }).catch((err) =>
+      console.error("Async Founder Meeting Notification Exception:", err)
+    );
+
+    // Save resolved meeting URL & update CRM pipeline stage to meeting_booked in Firebase RTDB
+    if (email || phone) {
+      await updateLeadStageInFirebase({
+        phone: cleanNumber,
+        email,
+        pipelineStage: "meeting_booked",
+        status: "completed",
+        meetingDate: date,
+        meetingTime: time,
+        meetingUrl: resolvedMeetingUrl,
+      });
+    }
+
+    // Purge pending message queues from Step 1 (1st Connection) and Step 2 (Survey) when meeting is booked
+    try {
+      const { cancelAllLeadTasks, syncLeadAutomations } = require("./whatsapp_pipeline_stage_configuration");
+      await cancelAllLeadTasks(cleanNumber);
+      syncLeadAutomations(
+        {
+          fullName,
+          email,
+          phone: cleanNumber,
+          pipelineStage: "meeting_booked",
+          status: "completed",
+          meeting: { meetingDate: date, meetingTime: time },
+        },
+        "survey_completed"
+      ).catch(() => {});
+    } catch (err) {
+      console.error("[Auto Send Meeting] Task queue purge exception:", err);
+    }
+
+    if (stepConfig.isEnabled === false) {
+      return res.status(200).json({
+        success: false,
+        disabled: true,
+        meetingUrl: resolvedMeetingUrl,
+        message: "Step 3 Meeting WhatsApp confirmation is disabled.",
+      });
+    }
+
+    const instanceName = await resolveActiveInstance(config.selectedInstanceName);
+    if (!instanceName) return res.status(400).json({ success: false, error: "No active WhatsApp instance available." });
+
+    // Format custom message template configured in WhatsApp Manager Page
+    let rawTemplate =
+      stepConfig.template ||
+      "🎉 *Appointment Confirmed!*\n\nHi *{{name}}*,\nYour 1-on-1 Business Growth Consultation has been booked successfully.\n\n📅 *Date:* {{date}}\n⏰ *Time:* {{time}}\n📧 *Email:* {{email}}\n🎥 *Google Meet Link:* {{meeting_url}}\n\nWe're excited to help you scale your business revenue!";
+
+    const formattedMessage = rawTemplate
+      .replace(/\{\{\s*name\s*\}\}/gi, fullName || "Valued Client")
+      .replace(/\{\{\s*email\s*\}\}/gi, email || "N/A")
+      .replace(/\{\{\s*phone\s*\}\}/gi, phone || "N/A")
+      .replace(/\{\{\s*date\s*\}\}/gi, date || "Upcoming Date")
+      .replace(/\{\{\s*time\s*\}\}/gi, time || "Scheduled Time")
+      .replace(/\{\{\s*meeting_url\s*\}\}/gi, resolvedMeetingUrl)
+      .replace(/\{\{\s*meeting_link\s*\}\}/gi, resolvedMeetingUrl)
+      .replace(/\{\{\s*link\s*\}\}/gi, resolvedMeetingUrl);
+
+    console.log(`💬 [Auto Send Meeting] Dispatching meeting confirmation to ${cleanNumber} via active instance '${instanceName}'...`);
+
+    const evoRes = await evoApiCall(`/message/sendText/${instanceName}`, "POST", {
+      number: cleanNumber,
+      text: formattedMessage,
+    });
+
+    if (evoRes.ok) {
+      await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+        status: "open",
+        qrCode: null,
+        updatedAt: new Date().toISOString(),
+      });
+      const logId = `auto_meeting_${Date.now()}`;
+      await firebaseDb(`whatsapp_logs/${instanceName}/${logId}`, "PUT", {
+        id: logId,
+        type: "auto_meeting",
+        number: cleanNumber,
+        text: formattedMessage,
+        status: "sent",
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      console.error(`❌ [Auto Send Meeting] Evolution API send failed for ${cleanNumber}:`, evoRes.data);
+    }
+
+    return res.status(200).json({
+      success: evoRes.ok,
+      meetingUrl: resolvedMeetingUrl,
+      message: evoRes.ok ? "Meeting confirmation text sent via WhatsApp" : "WhatsApp send failed",
+      data: evoRes.data || null,
+    });
+  } catch (err) {
+    console.error("Auto Send Meeting Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 14. Executive Reschedule Meeting & Update Google Meet
+ * POST /api/whatsapp/reschedule-meeting
+ */
+router.post("/reschedule-meeting", async (req, res) => {
+  try {
+    const { leadId, email, phone, fullName, newDate, newTime, sendWhatsapp, campaignName = "firstoptionagency" } = req.body;
+    if (!newDate || !newTime) {
+      return res.status(400).json({ success: false, error: "New date and time are required for rescheduling." });
+    }
+
+    // 1. Generate unique Google Meet URL for new date & time
+    const { createUniqueGoogleMeetEvent } = require("./google_calendar");
+    const autoUniqueUrl = await createUniqueGoogleMeetEvent({ fullName, email, dateStr: newDate, timeStr: newTime });
+    const config = (await firebaseDb("whatsapp_configuration/firstoptionagency")) || {};
+    const newMeetingUrl = autoUniqueUrl || config.defaultMeetingUrl || "https://meet.google.com/firstoption-strategy-call";
+
+    let whatsappSent = false;
+    let whatsappError = null;
+
+    // 2. Send WhatsApp Notification if sendWhatsapp is true and phone exists
+    const cleanNumber = phone ? sanitizePhoneNumber(phone) : "";
+    if (sendWhatsapp && cleanNumber && cleanNumber.length >= 5) {
+      const instanceName = await resolveActiveInstance(config.selectedInstanceName);
+      if (instanceName) {
+        const rescheduleTemplate =
+          "📅 *Meeting Rescheduled!*\n\n" +
+          "Dear *{{name}}*,\n\n" +
+          "Your strategy session with *First Option Agency* has been updated to a new date & time:\n\n" +
+          "🗓️ *New Date:* {{date}}\n" +
+          "🕒 *New Time:* {{time}}\n" +
+          "🎥 *Google Meet Video Call:* {{meeting_url}}\n\n" +
+          "Please join the video call using the link above at the rescheduled time. We look forward to speaking with you!\n\n" +
+          "Best regards,\n" +
+          "*First Option Team*";
+
+        const formattedMessage = rescheduleTemplate
+          .replace(/\{\{\s*name\s*\}\}/gi, fullName || "Valued Client")
+          .replace(/\{\{\s*date\s*\}\}/gi, newDate)
+          .replace(/\{\{\s*time\s*\}\}/gi, newTime)
+          .replace(/\{\{\s*meeting_url\s*\}\}/gi, newMeetingUrl)
+          .replace(/\{\{\s*meeting_link\s*\}\}/gi, newMeetingUrl);
+
+        const evoRes = await evoApiCall(`/message/sendText/${instanceName}`, "POST", {
+          number: cleanNumber,
+          text: formattedMessage,
+        });
+
+        whatsappSent = evoRes.ok;
+        if (!evoRes.ok) {
+          whatsappError = evoRes.data?.error || evoRes.data?.message || `HTTP ${evoRes.status}`;
+        }
+
+        if (evoRes.ok) {
+          const logId = `reschedule_${Date.now()}`;
+          const logData = {
+            id: logId,
+            type: "meeting_rescheduled",
+            number: cleanNumber,
+            leadName: fullName || "Client",
+            text: formattedMessage,
+            status: "sent",
+            timestamp: new Date().toISOString(),
+          };
+          await firebaseDb(`whatsapp_logs/${instanceName}/${logId}`, "PUT", logData);
+          await firebaseDb(`whatsapp_lead_logs/${cleanNumber}/${logId}`, "PUT", logData);
+        }
+      }
+    }
+
+    // 3. Save Updated Meeting Date, Time, and URL back into Firebase RTDB
+    if (leadId || email || phone) {
+      const cleanPhoneNum = phone ? sanitizePhoneNumber(phone) : "";
+      const cleanEmailStr = email ? String(email).toLowerCase().trim() : "";
+      const searchLeadId = leadId ? String(leadId).trim() : "";
+      const nowIso = new Date().toISOString();
+
+      const campaignsObj = (await firebaseDb("campaigns")) || {};
+
+      for (const [cKey, campaignData] of Object.entries(campaignsObj)) {
+        if (!campaignData || typeof campaignData !== "object") continue;
+        const leadsNode = campaignData.leads || {};
+
+        for (const [dKey, leadsDateGroup] of Object.entries(leadsNode)) {
+          if (!leadsDateGroup || typeof leadsDateGroup !== "object") continue;
+
+          for (const [lId, leadObj] of Object.entries(leadsDateGroup)) {
+            if (!leadObj || typeof leadObj !== "object") continue;
+
+            const lEmail = (leadObj.email || "").toLowerCase().trim();
+            const lPhone = sanitizePhoneNumber(leadObj.phone);
+            const lIdStr = String(leadObj.id || lId).trim();
+
+            const isMatch =
+              (searchLeadId && (lIdStr === searchLeadId || lId === searchLeadId)) ||
+              (cleanEmailStr && lEmail === cleanEmailStr) ||
+              (cleanPhoneNum && lPhone === cleanPhoneNum);
+
+            if (isMatch) {
+              const oldMDate = leadObj.meeting?.meetingDate || leadObj.meetingDate;
+              const oldMTime = leadObj.meeting?.meetingTime || leadObj.meetingTime;
+              const oldMeetingKey = oldMDate && oldMTime ? `${oldMDate}_${oldMTime}` : null;
+
+              const leadPath = `campaigns/${cKey}/leads/${dKey}/${lId}`;
+
+              // Update meeting sub-object on Lead node
+              await firebaseDb(`${leadPath}/meeting`, "PATCH", {
+                meetingDate: newDate,
+                meetingTime: newTime,
+                meetingUrl: newMeetingUrl,
+                rescheduledAt: nowIso,
+              });
+
+              await firebaseDb(leadPath, "PATCH", {
+                updatedAt: nowIso,
+              });
+
+              // Clean up old meeting index if meeting date changed
+              if (oldMDate && oldMDate !== newDate && campaignData.meetings?.[oldMDate]?.[lId]) {
+                await firebaseDb(`campaigns/${cKey}/meetings/${oldMDate}/${lId}`, "DELETE");
+              }
+
+              // Update/create new meeting index record under /meetings/{newDate}/{lId}
+              const updatedMeetingPayload = {
+                leadId: lIdStr || lId,
+                fullName: leadObj.fullName || fullName || "Client",
+                email: leadObj.email || email || "",
+                phone: leadObj.phone || phone || "",
+                meetingDate: newDate,
+                meetingTime: newTime,
+                meetingUrl: newMeetingUrl,
+                status: "booked",
+                rescheduledAt: nowIso,
+                updatedAt: nowIso,
+              };
+
+              await firebaseDb(`campaigns/${cKey}/meetings/${newDate}/${lId}`, "PATCH", updatedMeetingPayload);
+
+              // Trigger Google Cloud Tasks Automation Sync for updated meeting schedule
+              try {
+                const { syncLeadAutomations } = require("./whatsapp_pipeline_stage_configuration");
+                const fullUpdatedLead = {
+                  ...leadObj,
+                  _path: leadPath,
+                  meeting: {
+                    ...(leadObj.meeting || {}),
+                    meetingDate: newDate,
+                    meetingTime: newTime,
+                    meetingUrl: newMeetingUrl,
+                  },
+                };
+                syncLeadAutomations(fullUpdatedLead, null, oldMeetingKey).catch(() => {});
+              } catch (err) {
+                // Cloud Tasks sync optional catch
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      newDate,
+      newTime,
+      meetingUrl: newMeetingUrl,
+      whatsappSent,
+      whatsappError,
+      message: whatsappSent
+        ? "Meeting rescheduled and WhatsApp notification sent!"
+        : "Meeting rescheduled successfully.",
+    });
+  } catch (err) {
+    console.error("Reschedule Meeting Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 14. Webhook Receiver for Evolution API Events
+ * POST /api/evolution/webhook
+ */
+router.post("/webhook", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const event = payload.event || payload.type || payload.event_type;
+    const instanceName = payload.instanceName || payload.instance || payload.data?.instanceName;
+
+    console.log(`[WhatsApp Webhook] Event: ${event} | Instance: ${instanceName}`);
+
+    if (instanceName) {
+      if (event === "QRCode" || event === "qrcode") {
+        const rawQr = payload.data?.qrcode || payload.data?.base64 || payload.qrcode;
+        if (rawQr) {
+          const qrCode = rawQr.startsWith("data:") ? rawQr : `data:image/png;base64,${rawQr}`;
+          await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+            qrCode,
+            status: "connecting",
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      } else if (event === "Connected" || event === "PairSuccess" || event === "open") {
+        await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+          status: "open",
+          qrCode: null,
+          updatedAt: new Date().toISOString(),
+        });
+      } else if (event === "LoggedOut" || event === "Disconnected" || event === "close") {
+        await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+          status: "close",
+          qrCode: null,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    return res.status(200).json({ received: true, event });
+  } catch (err) {
+    console.error("Webhook Processing Error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 15. Send Staff Flow Notification
+ * POST /api/whatsapp/notify-staff-flow
+ */
+router.post("/notify-staff-flow", async (req, res) => {
+  try {
+    const { staffPhone, staffName, clientName, flowTitle, roleName, tasks, domain } = req.body;
+    if (!staffPhone) {
+      return res.status(400).json({ success: false, error: "Staff phone is required" });
+    }
+
+    const config = (await firebaseDb("whatsapp_configuration/firstoptionagency")) || {};
+    const instanceName = await resolveActiveInstance(config.selectedInstanceName);
+    if (!instanceName) {
+      return res.status(400).json({ success: false, error: "No active WhatsApp instance available." });
+    }
+
+    const cleanNumber = sanitizePhoneNumber(staffPhone);
+    const hostDomain = domain || "firstoptionagency.com";
+    const managementUrl = `http://${hostDomain}/management`;
+
+    const taskLines = Array.isArray(tasks) && tasks.length > 0
+      ? tasks.map((t, idx) => `${idx + 1}. *${t.title || t.name || t}*`).join("\n")
+      : "• Execute assigned tasks for client onboarding flow";
+
+    const messageText = `📋 *New Flow & Task Assignment*
+
+Hello ${staffName || "Team Member"},
+You have new tasks assigned for onboarded client: *${clientName || "N/A"}*!
+
+🔄 *Flow:* ${flowTitle || "N/A"}
+👤 *Your Role:* ${roleName || "Staff"}
+
+📝 *Your Tasks:*
+${taskLines}
+
+🔗 *Access HMS Management Portal:*
+${managementUrl}
+
+Please log in to your dashboard to review and manage your tasks.`;
+
+    const evoRes = await evoApiCall(`/message/sendText/${instanceName}`, "POST", {
+      number: cleanNumber,
+      text: messageText,
+    });
+
+    if (evoRes.ok) {
+      await firebaseDb(`whatsapp_unofficial_instances/${instanceName}`, "PATCH", {
+        status: "open",
+        qrCode: null,
+        updatedAt: new Date().toISOString(),
+      });
+      const logId = `staff_flow_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      await firebaseDb(`whatsapp_logs/${instanceName}/${logId}`, "PUT", {
+        id: logId,
+        type: "staff_flow_notification",
+        number: cleanNumber,
+        text: messageText,
+        status: "sent",
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(200).json({ success: true, message: "Staff WhatsApp notification sent!" });
+    } else {
+      return res.status(500).json({
+        success: false,
+        error: evoRes.data.error || evoRes.data.message || "Failed to send staff WhatsApp message",
+      });
+    }
+  } catch (err) {
+    console.error("Notify Staff Flow Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/whatsapp/notify-admin-ticket
+ * Dispatch instant WhatsApp alert to Admin when a client raises a Support Ticket
+ */
+router.post("/notify-admin-ticket", async (req, res) => {
+  try {
+    const { ticketId, ticketNumber, clientName, clientEmail, clientPhone, level, levelLabel, subject, description, domain } = req.body;
+
+    const config = (await firebaseDb("whatsapp_configuration/firstoptionagency")) || {};
+    let instanceName = config.selectedInstanceName;
+
+    if (!instanceName) {
+      const fbInstances = (await firebaseDb("whatsapp_unofficial_instances")) || {};
+      const instancesList = Object.values(fbInstances).filter(Boolean);
+      const openInst = instancesList.find((i) => i.status === "open") || instancesList[0];
+      if (openInst) instanceName = openInst.instanceName;
+    }
+
+    if (!instanceName) {
+      return res.status(400).json({ success: false, error: "No active WhatsApp instance found" });
+    }
+
+    // Find Admin phone numbers from both users and users_staff nodes in Firebase
+    const usersObj = (await firebaseDb("users")) || {};
+    const usersStaffObj = (await firebaseDb("users_staff")) || {};
+    const allUserRecords = { ...usersObj, ...usersStaffObj };
+
+    const adminPhones = new Set();
+
+    for (const u of Object.values(allUserRecords)) {
+      if (!u || !u.phone) continue;
+      const isAd =
+        u.roleId === "role_admin" ||
+        (u.roleName && u.roleName.toLowerCase().includes("admin")) ||
+        (u.email && u.email.toLowerCase().startsWith("firstoption"));
+
+      if (isAd) {
+        let clean = sanitizePhoneNumber(u.phone);
+        if (clean.length === 10) clean = "91" + clean;
+        if (clean.length >= 10) adminPhones.add(clean);
+      }
+    }
+
+    // Fallback: Check configured admin phone or default master admin phone
+    if (config.adminPhone) {
+      let cleanConfig = sanitizePhoneNumber(config.adminPhone);
+      if (cleanConfig.length === 10) cleanConfig = "91" + cleanConfig;
+      if (cleanConfig.length >= 10) adminPhones.add(cleanConfig);
+    }
+
+    if (adminPhones.size === 0) {
+      adminPhones.add("919958399157"); // Default Master Admin
+    }
+
+    const urgencyMap = {
+      level1: "🚨 LEVEL 1 (CRITICAL / URGENT)",
+      level2: "⚡ LEVEL 2 (HIGH PRIORITY)",
+      level3: "📌 LEVEL 3 (MEDIUM PRIORITY)",
+      level4: "ℹ️ LEVEL 4 (GENERAL QUERY)",
+    };
+
+    const urgencyTag = urgencyMap[level] || `LEVEL ${level.replace("level", "")} (${levelLabel || "General"})`;
+    const crmUrl = `http://${domain || "firstoptionagency.com"}/crms`;
+
+    const messageText = `🎫 *NEW SUPPORT TICKET RAISED* 🎫
+
+*Ticket Number:* #${ticketNumber || ticketId}
+*Urgency Level:* ${urgencyTag}
+
+👤 *Client Name:* ${clientName || "Client"}
+✉️ *Email:* ${clientEmail || "N/A"}
+📞 *Phone:* ${clientPhone || "N/A"}
+
+📌 *Subject:* ${subject}
+
+📝 *Details:*
+${description}
+
+📅 *Submitted:* ${new Date().toLocaleString()}
+🔗 *View in CRM:* ${crmUrl}?tab=tickets`;
+
+    for (const phone of Array.from(adminPhones)) {
+      await evoApiCall(`/message/sendText/${instanceName}`, "POST", {
+        number: phone,
+        text: messageText,
+      }).catch((err) => console.error(`Error sending ticket alert to admin ${phone}:`, err));
+    }
+
+    return res.status(200).json({ success: true, message: "Admin ticket notification sent!" });
+  } catch (err) {
+    console.error("Notify Admin Ticket Exception:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.sendMetaCloudApiFounderNotification = sendMetaCloudApiFounderNotification;
+router.updateLeadStageInFirebase = updateLeadStageInFirebase;
+module.exports = router;
+module.exports.sendMetaCloudApiFounderNotification = sendMetaCloudApiFounderNotification;
+module.exports.updateLeadStageInFirebase = updateLeadStageInFirebase;
+
+
