@@ -100,15 +100,20 @@ export default function RootLayout({
             `,
           }}
         />
-        <noscript>
-          <img
-            height="1"
-            width="1"
-            style={{ display: "none" }}
-            src={`https://www.facebook.com/tr?id=${FB_PIXEL_ID}&ev=PageView&noscript=1`}
-            alt=""
-          />
-        </noscript>
+        {/* Disable mousewheel number input increment/decrement globally */}
+        <Script
+          id="disable-number-input-scroll"
+          strategy="afterInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `
+              document.addEventListener('wheel', function(e) {
+                if (document.activeElement && document.activeElement.type === 'number') {
+                  document.activeElement.blur();
+                }
+              }, { passive: true });
+            `,
+          }}
+        />
       </body>
     </html>
   );

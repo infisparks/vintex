@@ -275,7 +275,7 @@ export default function Home({
           initialStep={bookingConfig.step}
           initialLeadId={bookingConfig.leadId}
           initialCreatedDate={bookingConfig.createdDate}
-          campaignName={bookingConfig.campaignName || "meemstonex"}
+          campaignName={bookingConfig.campaignName || "vintexair"}
         />
 
         {/* Video Modal */}

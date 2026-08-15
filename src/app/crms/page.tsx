@@ -30,7 +30,46 @@ import {
   unmarkDateOrSlot,
   getAllBlockedSlotsAndDates,
   DEFAULT_DAILY_TIME_SLOTS,
+  InventoryItem,
+  InventoryTransaction,
+  InventorySummary,
+  VINTEX_INVENTORY_CATEGORIES,
+  VINTEX_INVENTORY_UNITS,
+  getInventoryItems,
+  getInventorySummary,
+  saveInventoryItem,
+  deleteInventoryItem,
+  recordStockTransaction,
+  getInventoryTransactions,
+  seedDefaultVintexAirInventory,
+  Vendor,
+  Quotation,
+  QuotationItem,
+  QuotationBankDetails,
+  PurchaseBill,
+  PurchaseBillItem,
+  VINTEX_AIR_COMPANY_DETAILS,
+  getVendors,
+  saveVendor,
+  deleteVendor,
+  getQuotations,
+  getQuotationsByLeadId,
+  saveQuotation,
+  deleteQuotation,
+  getPurchaseBills,
+  savePurchaseBill,
+  numberToIndianWords,
+  seedDefaultVendors,
+  seedDefaultQuotations,
+  resetAndSeedVintexAirDatabase,
 } from "@/lib/firebase";
+import { QuotationsWorkspaceView } from "@/components/crm/quotations/QuotationsWorkspaceView";
+import { QuotationInvoicePrintModal } from "@/components/crm/quotations/QuotationInvoicePrintModal";
+import { QuotationDrawer } from "@/components/crm/quotations/QuotationDrawer";
+import { ProductsCatalogView } from "@/components/crm/inventory/ProductsCatalogView";
+import { VendorsRegistryView } from "@/components/crm/inventory/VendorsRegistryView";
+import { StockLedgerView } from "@/components/crm/inventory/StockLedgerView";
+import { PurchaseBillsView } from "@/components/crm/inventory/PurchaseBillsView";
 import {
   signOut,
   onAuthStateChanged,
@@ -254,7 +293,7 @@ export default function CRMPage() {
 
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [selectedCampaign, setSelectedCampaign] = useState<string>("all");
-  const [activeTab, setActiveTab] = useState<"leads" | "pipeline" | "meetings" | "calendar" | "roles" | "tickets">("pipeline");
+  const [activeTab, setActiveTab] = useState<"leads" | "pipeline" | "meetings" | "calendar" | "roles" | "tickets" | "inventory" | "quotations">("pipeline");
 
   // Support Tickets Management State
   const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
@@ -263,19 +302,147 @@ export default function CRMPage() {
   const [ticketStatusFilter, setTicketStatusFilter] = useState<string>("all");
   const [ticketLevelFilter, setTicketLevelFilter] = useState<string>("all");
 
+  // Vintex Air Inventory Management State
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [inventorySummary, setInventorySummary] = useState<InventorySummary>({
+    totalItems: 0,
+    totalStockUnits: 0,
+    totalStockValuation: 0,
+    lowStockCount: 0,
+    outOfStockCount: 0,
+    lastUpdated: new Date().toISOString(),
+  });
+  const [inventoryTransactions, setInventoryTransactions] = useState<InventoryTransaction[]>([]);
+  const [isInventoryLoading, setIsInventoryLoading] = useState(false);
+  const [inventorySearchQuery, setInventorySearchQuery] = useState("");
+  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState("all");
+  const [inventoryStatusFilter, setInventoryStatusFilter] = useState<"all" | "in_stock" | "low_stock" | "out_of_stock">("all");
+  const [inventoryViewMode, setInventoryViewMode] = useState<"products" | "vendors" | "ledger" | "purchase_bills">("products");
+
+  // Vendor Management State
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [isVendorsLoading, setIsVendorsLoading] = useState(false);
+  const [vendorSearchQuery, setVendorSearchQuery] = useState("");
+  const [isVendorDrawerOpen, setIsVendorDrawerOpen] = useState(false);
+  const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
+  const [vendorFormName, setVendorFormName] = useState("");
+  const [vendorFormContact, setVendorFormContact] = useState("");
+  const [vendorFormPhone, setVendorFormPhone] = useState("");
+  const [vendorFormEmail, setVendorFormEmail] = useState("");
+  const [vendorFormGstin, setVendorFormGstin] = useState("");
+  const [vendorFormPan, setVendorFormPan] = useState("");
+  const [vendorFormAddress, setVendorFormAddress] = useState("");
+  const [vendorFormCity, setVendorFormCity] = useState("Malegaon");
+  const [vendorFormState, setVendorFormState] = useState("Maharashtra");
+  const [vendorFormPincode, setVendorFormPincode] = useState("423203");
+  const [vendorFormBankName, setVendorFormBankName] = useState("");
+  const [vendorFormBankAcc, setVendorFormBankAcc] = useState("");
+  const [vendorFormBankIfsc, setVendorFormBankIfsc] = useState("");
+  const [vendorFormBankBranch, setVendorFormBankBranch] = useState("");
+  const [vendorFormNotes, setVendorFormNotes] = useState("");
+  const [isSavingVendor, setIsSavingVendor] = useState(false);
+  const [vendorFormError, setVendorFormError] = useState("");
+  const [vendorToDelete, setVendorToDelete] = useState<Vendor | null>(null);
+  const [isDeletingVendor, setIsDeletingVendor] = useState(false);
+
+  // Product Drawer State
+  const [isProductDrawerOpen, setIsProductDrawerOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
+  const [productFormSku, setProductFormSku] = useState("");
+  const [productFormName, setProductFormName] = useState("");
+  const [productFormDescription, setProductFormDescription] = useState("");
+  const [productFormHsn, setProductFormHsn] = useState("84796000");
+  const [productFormCategory, setProductFormCategory] = useState(VINTEX_INVENTORY_CATEGORIES[0]);
+  const [productFormUnit, setProductFormUnit] = useState("PCS");
+  const [productFormCurrentStock, setProductFormCurrentStock] = useState("1");
+  const [productFormMinAlert, setProductFormMinAlert] = useState("2");
+  const [productFormPurchaseRate, setProductFormPurchaseRate] = useState("50000");
+  const [productFormSellingRate, setProductFormSellingRate] = useState("65000");
+  const [productFormGstRate, setProductFormGstRate] = useState("18");
+  const [productFormVendorId, setProductFormVendorId] = useState("");
+  const [productFormSupplier, setProductFormSupplier] = useState("Vintex Air Manufacturing Unit");
+  const [productFormLocation, setProductFormLocation] = useState("Main Plant - Bay A1");
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [productFormError, setProductFormError] = useState("");
+
+  // Quotation Management State
+  const [quotations, setQuotations] = useState<Quotation[]>([]);
+  const [isQuotationsLoading, setIsQuotationsLoading] = useState(false);
+  const [quotationsSearchQuery, setQuotationsSearchQuery] = useState("");
+  const [quotationsDatePreset, setQuotationsDatePreset] = useState<"all_time" | "today" | "last_7_days" | "custom">("all_time");
+  const [quotationsStatusFilter, setQuotationsStatusFilter] = useState<string>("all");
+  
+  // Quotation Creator / Drawer State
+  const [isQuotationDrawerOpen, setIsQuotationDrawerOpen] = useState(false);
+  const [editingQuotation, setEditingQuotation] = useState<Quotation | null>(null);
+  const [quotationLead, setQuotationLead] = useState<LeadData | null>(null);
+  const [quotationFormNo, setQuotationFormNo] = useState("5");
+  const [quotationFormDate, setQuotationFormDate] = useState("");
+  const [quotationFormClientName, setQuotationFormClientName] = useState("");
+  const [quotationFormClientPhone, setQuotationFormClientPhone] = useState("");
+  const [quotationFormClientEmail, setQuotationFormClientEmail] = useState("");
+  const [quotationFormClientAddress, setQuotationFormClientAddress] = useState("");
+  const [quotationFormPlaceOfSupply, setQuotationFormPlaceOfSupply] = useState("Maharashtra");
+  const [quotationFormItems, setQuotationFormItems] = useState<QuotationItem[]>([]);
+  const [quotationFormNotes, setQuotationFormNotes] = useState("");
+  const [quotationFormDeductStock, setQuotationFormDeductStock] = useState(false);
+  const [isSavingQuotation, setIsSavingQuotation] = useState(false);
+  const [quotationFormError, setQuotationFormError] = useState("");
+  const [quotationToDelete, setQuotationToDelete] = useState<Quotation | null>(null);
+  const [isDeletingQuotation, setIsDeletingQuotation] = useState(false);
+
+  // Quotation Exact Invoice View / Print Modal State
+  const [viewingQuotation, setViewingQuotation] = useState<Quotation | null>(null);
+  const [isQuotationViewOpen, setIsQuotationViewOpen] = useState(false);
+
+  // Purchase Bills State
+  const [purchaseBills, setPurchaseBills] = useState<PurchaseBill[]>([]);
+  const [isPurchaseBillsLoading, setIsPurchaseBillsLoading] = useState(false);
+  const [viewingPurchaseBill, setViewingPurchaseBill] = useState<PurchaseBill | null>(null);
+  const [isPurchaseBillViewOpen, setIsPurchaseBillViewOpen] = useState(false);
+
+  // Stock In (Purchase) Modal State
+  const [isStockInModalOpen, setIsStockInModalOpen] = useState(false);
+  const [stockInItem, setStockInItem] = useState<InventoryItem | null>(null);
+  const [stockInQty, setStockInQty] = useState("1");
+  const [stockInRate, setStockInRate] = useState("");
+  const [stockInVendorId, setStockInVendorId] = useState("");
+  const [stockInVendor, setStockInVendor] = useState("");
+  const [stockInRefNo, setStockInRefNo] = useState("");
+  const [stockInNotes, setStockInNotes] = useState("");
+  const [stockInGenerateBill, setStockInGenerateBill] = useState(true);
+
+  // Stock Out (Sale) Modal State
+  const [isStockOutModalOpen, setIsStockOutModalOpen] = useState(false);
+  const [stockOutItem, setStockOutItem] = useState<InventoryItem | null>(null);
+  const [stockOutQty, setStockOutQty] = useState("1");
+  const [stockOutRate, setStockOutRate] = useState("");
+  const [stockOutCustomer, setStockOutCustomer] = useState("");
+  const [stockOutCustomerPhone, setStockOutCustomerPhone] = useState("");
+  const [stockOutInvoiceNo, setStockOutInvoiceNo] = useState("");
+  const [stockOutNotes, setStockOutNotes] = useState("");
+
+  // Stock Transaction Processing
+  const [isProcessingStock, setIsProcessingStock] = useState(false);
+  const [stockModalError, setStockModalError] = useState("");
+
+  // Delete Product Confirmation Modal
+  const [itemToDelete, setItemToDelete] = useState<InventoryItem | null>(null);
+  const [isDeletingProduct, setIsDeletingProduct] = useState(false);
+
   // Read URL query parameter on initial load to preserve route state on refresh
   useEffect(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       const tabParam = params.get("tab") as any;
-      if (tabParam && ["leads", "pipeline", "meetings", "calendar", "roles", "tickets"].includes(tabParam)) {
+      if (tabParam && ["leads", "pipeline", "meetings", "calendar", "roles", "tickets", "inventory", "quotations"].includes(tabParam)) {
         setActiveTab(tabParam);
       }
     }
   }, []);
 
   // Helper to switch active tab and sync URL query parameter
-  const changeTab = useCallback((tab: "leads" | "pipeline" | "meetings" | "calendar" | "tickets") => {
+  const changeTab = useCallback((tab: "leads" | "pipeline" | "meetings" | "calendar" | "roles" | "tickets" | "inventory" | "quotations") => {
     setActiveTab(tab);
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
@@ -283,6 +450,679 @@ export default function CRMPage() {
       window.history.pushState({}, "", url.toString());
     }
   }, []);
+
+  // Inventory & Vendor Data Fetching
+  const fetchInventoryData = useCallback(async () => {
+    setIsInventoryLoading(true);
+    try {
+      const [items, summary, txns, vends, bills] = await Promise.all([
+        getInventoryItems(),
+        getInventorySummary(),
+        getInventoryTransactions(),
+        getVendors(),
+        getPurchaseBills(),
+      ]);
+      setInventoryItems(items);
+      setInventorySummary(summary);
+      setInventoryTransactions(txns);
+      setVendors(vends);
+      setPurchaseBills(bills);
+    } catch (err) {
+      console.error("fetchInventoryData Error:", err);
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  }, []);
+
+  // Quotations Data Fetching
+  const fetchQuotationsData = useCallback(async () => {
+    setIsQuotationsLoading(true);
+    try {
+      const quotes = await getQuotations();
+      setQuotations(quotes);
+    } catch (err) {
+      console.error("fetchQuotationsData Error:", err);
+    } finally {
+      setIsQuotationsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "inventory") {
+      fetchInventoryData();
+    } else if (activeTab === "quotations") {
+      fetchQuotationsData();
+      fetchInventoryData(); // also load inventory so line items can be selected
+    }
+  }, [activeTab, fetchInventoryData, fetchQuotationsData]);
+
+  // VINTEX AIR DATABASE RESET & SEEDING
+  const [isSeedingDb, setIsSeedingDb] = useState(false);
+  const [seedFeedback, setSeedFeedback] = useState<string | null>(null);
+
+  const handleResetAndSeedDatabase = async () => {
+    if (!confirm("Are you sure you want to reset & seed the database? This will clear old test data and populate authentic Vintex Air inventory, vendors, quotations, and inward bills.")) return;
+    setIsSeedingDb(true);
+    try {
+      const res = await resetAndSeedVintexAirDatabase();
+      if (res.success) {
+        setSeedFeedback(`Successfully seeded ${res.vendorsCount} vendors, ${res.productsCount} products, and ${res.quotationsCount} quotations!`);
+        await fetchInventoryData();
+        await fetchQuotationsData();
+        setTimeout(() => setSeedFeedback(null), 4500);
+      } else {
+        alert("Failed to seed: " + (res.error || "Unknown error"));
+      }
+    } catch (err: any) {
+      alert("Seeding error: " + err.message);
+    } finally {
+      setIsSeedingDb(false);
+    }
+  };
+
+  // VENDOR HANDLERS
+  const handleOpenAddVendorDrawer = () => {
+    setEditingVendor(null);
+    setVendorFormName("");
+    setVendorFormContact("");
+    setVendorFormPhone("");
+    setVendorFormEmail("");
+    setVendorFormGstin("");
+    setVendorFormPan("");
+    setVendorFormAddress("");
+    setVendorFormCity("Malegaon");
+    setVendorFormState("Maharashtra");
+    setVendorFormPincode("423203");
+    setVendorFormBankName("Axis Bank, Malegaon");
+    setVendorFormBankAcc("");
+    setVendorFormBankIfsc("");
+    setVendorFormBankBranch("");
+    setVendorFormNotes("");
+    setVendorFormError("");
+    setIsVendorDrawerOpen(true);
+  };
+
+  const handleOpenEditVendorDrawer = (vendor: Vendor) => {
+    setEditingVendor(vendor);
+    setVendorFormName(vendor.name);
+    setVendorFormContact(vendor.contactPerson || "");
+    setVendorFormPhone(vendor.phone);
+    setVendorFormEmail(vendor.email || "");
+    setVendorFormGstin(vendor.gstin || "");
+    setVendorFormPan(vendor.pan || "");
+    setVendorFormAddress(vendor.address || "");
+    setVendorFormCity(vendor.city || "Malegaon");
+    setVendorFormState(vendor.state || "Maharashtra");
+    setVendorFormPincode(vendor.pincode || "423203");
+    setVendorFormBankName(vendor.bankName || "");
+    setVendorFormBankAcc(vendor.bankAccountNo || "");
+    setVendorFormBankIfsc(vendor.bankIfsc || "");
+    setVendorFormBankBranch(vendor.bankBranch || "");
+    setVendorFormNotes(vendor.notes || "");
+    setVendorFormError("");
+    setIsVendorDrawerOpen(true);
+  };
+
+  const handleSaveVendorSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setVendorFormError("");
+
+    if (!vendorFormName.trim()) {
+      setVendorFormError("Vendor / Company Name is required.");
+      return;
+    }
+    if (!vendorFormPhone.trim()) {
+      setVendorFormError("Vendor phone number is required.");
+      return;
+    }
+
+    setIsSavingVendor(true);
+    try {
+      await saveVendor({
+        id: editingVendor ? editingVendor.id : undefined,
+        name: vendorFormName.trim(),
+        contactPerson: vendorFormContact.trim(),
+        phone: vendorFormPhone.trim(),
+        email: vendorFormEmail.trim(),
+        gstin: vendorFormGstin.trim(),
+        pan: vendorFormPan.trim(),
+        address: vendorFormAddress.trim(),
+        city: vendorFormCity.trim(),
+        state: vendorFormState.trim(),
+        pincode: vendorFormPincode.trim(),
+        bankName: vendorFormBankName.trim(),
+        bankAccountNo: vendorFormBankAcc.trim(),
+        bankIfsc: vendorFormBankIfsc.trim(),
+        bankBranch: vendorFormBankBranch.trim(),
+        notes: vendorFormNotes.trim(),
+        createdAt: editingVendor ? editingVendor.createdAt : undefined,
+      });
+
+      setIsVendorDrawerOpen(false);
+      await fetchInventoryData();
+    } catch (err: any) {
+      setVendorFormError(err.message || "Failed to save vendor.");
+    } finally {
+      setIsSavingVendor(false);
+    }
+  };
+
+  const handleDeleteVendor = async () => {
+    if (!vendorToDelete) return;
+    setIsDeletingVendor(true);
+    try {
+      await deleteVendor(vendorToDelete.id);
+      setVendorToDelete(null);
+      await fetchInventoryData();
+    } catch (err) {
+      console.error("handleDeleteVendor Error:", err);
+    } finally {
+      setIsDeletingVendor(false);
+    }
+  };
+
+  // PRODUCT HANDLERS
+  const handleOpenAddProductDrawer = () => {
+    setEditingItem(null);
+    setProductFormSku("");
+    setProductFormName("");
+    setProductFormDescription("");
+    setProductFormHsn("84796000");
+    setProductFormCategory(VINTEX_INVENTORY_CATEGORIES[0]);
+    setProductFormUnit("PCS");
+    setProductFormCurrentStock("1");
+    setProductFormMinAlert("2");
+    setProductFormPurchaseRate("50000");
+    setProductFormSellingRate("65000");
+    setProductFormGstRate("18");
+    const defaultVendor = vendors.length > 0 ? vendors[0] : null;
+    setProductFormVendorId(defaultVendor ? defaultVendor.id : "VEND_VINTEX_MFG");
+    setProductFormSupplier(defaultVendor ? defaultVendor.name : "Vintex Air Manufacturing Unit");
+    setProductFormLocation("Main Plant - Bay A1");
+    setProductFormError("");
+    setIsProductDrawerOpen(true);
+  };
+
+  const handleOpenEditProductDrawer = (item: InventoryItem) => {
+    setEditingItem(item);
+    setProductFormSku(item.sku);
+    setProductFormName(item.name);
+    setProductFormDescription(item.fullDescription || "");
+    setProductFormHsn(item.hsnCode || "84796000");
+    setProductFormCategory(item.category || VINTEX_INVENTORY_CATEGORIES[0]);
+    setProductFormUnit(item.unit || "PCS");
+    setProductFormCurrentStock(item.currentStock.toString());
+    setProductFormMinAlert(item.minStockAlert.toString());
+    setProductFormPurchaseRate(item.purchaseRate.toString());
+    setProductFormSellingRate(item.sellingRate.toString());
+    setProductFormGstRate(item.gstRate.toString());
+    setProductFormVendorId(item.vendorId || "");
+    setProductFormSupplier(item.supplierName || item.vendorName || "Vintex Air Manufacturing Unit");
+    setProductFormLocation(item.warehouseLocation || "");
+    setProductFormError("");
+    setIsProductDrawerOpen(true);
+  };
+
+  const handleSaveProductSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProductFormError("");
+
+    if (!productFormSku.trim()) {
+      setProductFormError("Product SKU / Model Code is required.");
+      return;
+    }
+    if (!productFormName.trim()) {
+      setProductFormError("Product Title is required.");
+      return;
+    }
+
+    setIsSavingProduct(true);
+    try {
+      const selectedV = vendors.find((v) => v.id === productFormVendorId);
+      await saveInventoryItem({
+        id: editingItem ? editingItem.id : undefined,
+        sku: productFormSku.trim().toUpperCase(),
+        name: productFormName.trim(),
+        fullDescription: productFormDescription.trim(),
+        hsnCode: productFormHsn.trim() || "84796000",
+        category: productFormCategory,
+        unit: productFormUnit,
+        currentStock: Number(productFormCurrentStock) || 0,
+        minStockAlert: Number(productFormMinAlert) || 2,
+        purchaseRate: Number(productFormPurchaseRate) || 0,
+        sellingRate: Number(productFormSellingRate) || 0,
+        gstRate: Number(productFormGstRate) || 18,
+        vendorId: productFormVendorId,
+        vendorName: selectedV ? selectedV.name : productFormSupplier.trim(),
+        supplierName: selectedV ? selectedV.name : productFormSupplier.trim(),
+        warehouseLocation: productFormLocation.trim(),
+        createdAt: editingItem ? editingItem.createdAt : undefined,
+      });
+
+      setIsProductDrawerOpen(false);
+      await fetchInventoryData();
+    } catch (err: any) {
+      setProductFormError(err.message || "An unexpected error occurred.");
+    } finally {
+      setIsSavingProduct(false);
+    }
+  };
+
+  const handleDeleteProductSubmit = async () => {
+    if (!itemToDelete) return;
+    setIsDeletingProduct(true);
+    try {
+      await deleteInventoryItem(itemToDelete.id);
+      setItemToDelete(null);
+      await fetchInventoryData();
+    } catch (err) {
+      console.error("handleDeleteProductSubmit Error:", err);
+    } finally {
+      setIsDeletingProduct(false);
+    }
+  };
+
+  // STOCK IN (PURCHASE) HANDLERS
+  const handleOpenStockInModal = (item?: InventoryItem) => {
+    const target = item || (inventoryItems.length > 0 ? inventoryItems[0] : null);
+    setStockInItem(target);
+    setStockInQty("1");
+    setStockInRate(target ? target.purchaseRate.toString() : "50000");
+    setStockInVendorId(target?.vendorId || (vendors.length > 0 ? vendors[0].id : ""));
+    const vMatch = vendors.find((v) => v.id === target?.vendorId);
+    setStockInVendor(vMatch ? vMatch.name : (target?.supplierName || "Vintex Air Manufacturing Unit"));
+    setStockInRefNo("PO-" + Date.now().toString().slice(-6));
+    setStockInNotes("");
+    setStockInGenerateBill(true);
+    setStockModalError("");
+    setIsStockInModalOpen(true);
+  };
+
+  const handleStockInSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStockModalError("");
+    if (!stockInItem) {
+      setStockModalError("Please select a valid item.");
+      return;
+    }
+    const qty = Number(stockInQty);
+    if (!qty || qty <= 0) {
+      setStockModalError("Please enter a valid inward stock quantity greater than 0.");
+      return;
+    }
+
+    setIsProcessingStock(true);
+    try {
+      const pRate = Number(stockInRate) || stockInItem.purchaseRate;
+      const res = await recordStockTransaction({
+        type: "purchase",
+        itemId: stockInItem.id,
+        itemSku: stockInItem.sku,
+        itemName: stockInItem.name,
+        qty: Math.abs(qty),
+        unitRate: pRate,
+        referenceNo: stockInRefNo.trim() || "PO-" + Date.now().toString().slice(-6),
+        partyName: stockInVendor.trim() || "Supplier Purchase",
+        vendorId: stockInVendorId,
+        notes: stockInNotes.trim(),
+        performedBy: currentUser?.email || "Vintex Inventory Staff",
+      });
+
+      if (!res.success) {
+        setStockModalError(res.error || "Failed to record purchase.");
+      } else {
+        // Optionally generate a formal Purchase Bill
+        if (stockInGenerateBill) {
+          const vObj = vendors.find((v) => v.id === stockInVendorId);
+          await savePurchaseBill({
+            billNo: stockInRefNo.trim() || `PB-${Date.now().toString().slice(-6)}`,
+            poReference: stockInRefNo.trim(),
+            vendorId: stockInVendorId,
+            vendorName: stockInVendor.trim() || (vObj ? vObj.name : "Supplier"),
+            vendorGstin: vObj?.gstin || "",
+            vendorPhone: vObj?.phone || "",
+            billDate: new Date().toLocaleDateString("en-GB"),
+            items: [
+              {
+                id: "item_1",
+                itemId: stockInItem.id,
+                sku: stockInItem.sku,
+                name: stockInItem.name,
+                hsnCode: stockInItem.hsnCode,
+                qty: Math.abs(qty),
+                unit: stockInItem.unit,
+                purchaseRate: pRate,
+                gstRate: stockInItem.gstRate,
+                taxAmount: Math.round(pRate * Math.abs(qty) * (stockInItem.gstRate / 100) * 100) / 100,
+                totalAmount: Math.round((pRate * Math.abs(qty) + pRate * Math.abs(qty) * (stockInItem.gstRate / 100)) * 100) / 100,
+              },
+            ],
+            notes: stockInNotes.trim(),
+            paymentStatus: "paid",
+          });
+        }
+
+        setIsStockInModalOpen(false);
+        await fetchInventoryData();
+      }
+    } catch (err: any) {
+      setStockModalError(err.message || "Failed to record purchase.");
+    } finally {
+      setIsProcessingStock(false);
+    }
+  };
+
+  // STOCK OUT (SALE) HANDLERS
+  const handleOpenStockOutModal = (item?: InventoryItem) => {
+    const target = item || (inventoryItems.length > 0 ? inventoryItems[0] : null);
+    setStockOutItem(target);
+    setStockOutQty("1");
+    setStockOutRate(target ? target.sellingRate.toString() : "65000");
+    setStockOutCustomer("");
+    setStockOutCustomerPhone("");
+    setStockOutInvoiceNo("INV-" + Date.now().toString().slice(-6));
+    setStockOutNotes("");
+    setStockModalError("");
+    setIsStockOutModalOpen(true);
+  };
+
+  const handleStockOutSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStockModalError("");
+    if (!stockOutItem) {
+      setStockModalError("Please select a valid item.");
+      return;
+    }
+    const qty = Number(stockOutQty);
+    if (!qty || qty <= 0) {
+      setStockModalError("Please enter a valid outward quantity greater than 0.");
+      return;
+    }
+    if (qty > stockOutItem.currentStock) {
+      setStockModalError(`Insufficient stock! Available quantity is only ${stockOutItem.currentStock} ${stockOutItem.unit}.`);
+      return;
+    }
+
+    setIsProcessingStock(true);
+    try {
+      const res = await recordStockTransaction({
+        type: "sale",
+        itemId: stockOutItem.id,
+        itemSku: stockOutItem.sku,
+        itemName: stockOutItem.name,
+        qty: -Math.abs(qty),
+        unitRate: Number(stockOutRate) || stockOutItem.sellingRate,
+        referenceNo: stockOutInvoiceNo.trim() || "INV-" + Date.now().toString().slice(-6),
+        partyName: stockOutCustomer.trim() || "Direct Client Sale",
+        partyContact: stockOutCustomerPhone.trim(),
+        notes: stockOutNotes.trim(),
+        performedBy: currentUser?.email || "Vintex Inventory Staff",
+      });
+
+      if (!res.success) {
+        setStockModalError(res.error || "Failed to record sale.");
+      } else {
+        setIsStockOutModalOpen(false);
+        await fetchInventoryData();
+      }
+    } catch (err: any) {
+      setStockModalError(err.message || "Failed to record sale.");
+    } finally {
+      setIsProcessingStock(false);
+    }
+  };
+
+  // QUOTATION HANDLERS
+  const handleOpenQuotationCreatorForLead = (lead: LeadData) => {
+    const leadId = lead.id || "";
+    const date = lead.createdDate || "";
+    router.push(`/crms/quotations/create?leadId=${encodeURIComponent(leadId)}&date=${encodeURIComponent(date)}`);
+  };
+
+  const handleOpenAddQuotationDrawer = (lead?: LeadData) => {
+    if (lead?.id) {
+      router.push(`/crms/quotations/create?leadId=${encodeURIComponent(lead.id)}&date=${encodeURIComponent(lead.createdDate || "")}`);
+    } else {
+      router.push("/crms/quotations/create");
+    }
+  };
+
+  const handleOpenStandaloneQuotationCreator = () => {
+    router.push("/crms/quotations/create");
+  };
+
+  const handleOpenEditQuotation = (quotation: Quotation) => {
+    router.push(`/crms/quotations/create?id=${quotation.id}`);
+  };
+
+  const handleAddQuotationLineItem = () => {
+    const newItem: QuotationItem = {
+      id: `item_${Date.now()}`,
+      name: "",
+      hsnCode: "84796000",
+      qty: 1,
+      unit: "PCS",
+      rate: 0,
+      gstRate: 18,
+      taxAmount: 0,
+      amount: 0,
+    };
+    setQuotationFormItems([...quotationFormItems, newItem]);
+  };
+
+  const handleSelectProductForQuotationItem = (index: number, itemId: string) => {
+    const prod = inventoryItems.find((i) => i.id === itemId);
+    if (!prod) return;
+    const updated = [...quotationFormItems];
+    const qty = updated[index].qty || 1;
+    const lineTax = Math.round((qty * prod.sellingRate * (prod.gstRate / 100)) * 100) / 100;
+    const lineTotal = Math.round((qty * prod.sellingRate + lineTax) * 100) / 100;
+
+    updated[index] = {
+      ...updated[index],
+      itemId: prod.id,
+      sku: prod.sku,
+      name: prod.name,
+      hsnCode: prod.hsnCode || "84796000",
+      unit: prod.unit || "PCS",
+      rate: prod.sellingRate,
+      gstRate: prod.gstRate || 18,
+      taxAmount: lineTax,
+      amount: lineTotal,
+    };
+    setQuotationFormItems(updated);
+  };
+
+  const handleUpdateQuotationItemField = (index: number, field: keyof QuotationItem, value: any) => {
+    const updated = [...quotationFormItems];
+    const item = { ...updated[index], [field]: value };
+    const qty = Number(field === "qty" ? value : item.qty) || 0;
+    const rate = Number(field === "rate" ? value : item.rate) || 0;
+    const gstRate = Number(field === "gstRate" ? value : item.gstRate) || 0;
+
+    const lineBase = Math.round(qty * rate * 100) / 100;
+    const lineTax = Math.round(lineBase * (gstRate / 100) * 100) / 100;
+    const lineTotal = Math.round((lineBase + lineTax) * 100) / 100;
+
+    item.taxAmount = lineTax;
+    item.amount = lineTotal;
+    updated[index] = item;
+    setQuotationFormItems(updated);
+  };
+
+  const handleRemoveQuotationItem = (index: number) => {
+    const updated = quotationFormItems.filter((_, i) => i !== index);
+    setQuotationFormItems(updated);
+  };
+
+  const handleSaveQuotationSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setQuotationFormError("");
+
+    if (!quotationFormClientName.trim()) {
+      setQuotationFormError("Client Name is required.");
+      return;
+    }
+    if (!quotationFormClientPhone.trim()) {
+      setQuotationFormError("Client Phone Number is required.");
+      return;
+    }
+    if (quotationFormItems.length === 0) {
+      setQuotationFormError("Please add at least 1 item in the quotation.");
+      return;
+    }
+
+    setIsSavingQuotation(true);
+    try {
+      const saved = await saveQuotation(
+        {
+          id: editingQuotation ? editingQuotation.id : undefined,
+          quotationNo: quotationFormNo.trim() || "5",
+          quotationDate: quotationFormDate.trim() || new Date().toLocaleDateString("en-GB"),
+          leadId: quotationLead ? quotationLead.id : (editingQuotation?.leadId || ""),
+          clientName: quotationFormClientName.trim(),
+          clientMobile: quotationFormClientPhone.trim(),
+          clientEmail: quotationFormClientEmail.trim(),
+          clientAddress: quotationFormClientAddress.trim(),
+          placeOfSupply: quotationFormPlaceOfSupply.trim() || "Maharashtra",
+          items: quotationFormItems,
+          notes: quotationFormNotes.trim(),
+          status: "sent",
+          createdAt: editingQuotation ? editingQuotation.createdAt : undefined,
+        },
+        {
+          shouldDeductStock: quotationFormDeductStock,
+          performedBy: currentUser?.email || "Vintex Air Executive",
+        }
+      );
+
+      setIsQuotationDrawerOpen(false);
+      await fetchQuotationsData();
+      await fetchInventoryData();
+
+      // Open the exact quotation view
+      setViewingQuotation(saved);
+      setIsQuotationViewOpen(true);
+    } catch (err: any) {
+      setQuotationFormError(err.message || "Failed to save quotation.");
+    } finally {
+      setIsSavingQuotation(false);
+    }
+  };
+
+  const handleDeleteQuotationSubmit = async () => {
+    if (!quotationToDelete) return;
+    setIsDeletingQuotation(true);
+    try {
+      await deleteQuotation(quotationToDelete.id, quotationToDelete.leadId, true);
+      setQuotationToDelete(null);
+      await fetchQuotationsData();
+      await fetchInventoryData();
+    } catch (err) {
+      console.error("handleDeleteQuotationSubmit Error:", err);
+    } finally {
+      setIsDeletingQuotation(false);
+    }
+  };
+
+  const handleOpenQuotationViewModal = (quotation: Quotation) => {
+    setViewingQuotation(quotation);
+    setIsQuotationViewOpen(true);
+  };
+
+  const handleShareQuotationWhatsApp = (quotation: Quotation) => {
+    const cleanPhone = quotation.clientMobile.replace(/\D/g, "");
+    const formattedPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+    
+    let itemsText = quotation.items
+      .map((it, idx) => `${idx + 1}. *${it.name.slice(0, 50)}...*\n   Qty: ${it.qty} ${it.unit} | Rate: ₹${it.rate.toLocaleString("en-IN")} | Tax: ₹${it.taxAmount.toLocaleString("en-IN")} | Total: *₹${it.amount.toLocaleString("en-IN")}*`)
+      .join("\n\n");
+
+    const message = `*OFFICIAL ESTIMATE & QUOTATION*\n*Vintex Air - Industrial Ventilation Solutions*\n\n` +
+      `📄 *Quotation No:* #${quotation.quotationNo}\n` +
+      `📅 *Date:* ${quotation.quotationDate}\n` +
+      `👤 *Client:* ${quotation.clientName}\n` +
+      `📍 *Location:* ${quotation.clientAddress}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📦 *ITEMS & SPECIFICATIONS:*\n\n` +
+      `${itemsText}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `💰 *Taxable Subtotal:* ₹${quotation.taxableAmount.toLocaleString("en-IN")}\n` +
+      `🏛️ *CGST (9%):* ₹${quotation.cgstAmount.toLocaleString("en-IN")}\n` +
+      `🏛️ *SGST (9%):* ₹${quotation.sgstAmount.toLocaleString("en-IN")}\n` +
+      `⭐ *TOTAL QUOTATION AMOUNT:* *₹${quotation.totalAmount.toLocaleString("en-IN")}*\n` +
+      `📝 *Amount in words:* _${quotation.totalAmountInWords}_\n\n` +
+      `🏦 *BANK PAYMENT DETAILS:*\n` +
+      `Bank: Axis Bank, Malegaon\n` +
+      `A/C Name: Royal Aircone\n` +
+      `A/C No: 91902002803808042\n` +
+      `IFSC: UTIB0001240\n` +
+      `UPI ID: 9922245312@axisbank\n\n` +
+      `For inquiries or order confirmation, please contact:\n` +
+      `📞 Vintex Air Sales: +91 9922245312 | ✉️ vintexair@gmail.com`;
+
+    const url = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(message)}`;
+    window.open(url, "_blank");
+  };
+
+  const handlePrintQuotation = () => {
+    window.print();
+  };
+
+  const handleExportInventoryCsv = () => {
+    if (inventoryItems.length === 0) return;
+
+    const headers = [
+      "SKU",
+      "Item Name",
+      "HSN Code",
+      "Category",
+      "Unit",
+      "Current Stock",
+      "Stock Status",
+      "Purchase Rate (Excl. Tax)",
+      "Selling Rate (Excl. Tax)",
+      "GST %",
+      "GST Tax Amount",
+      "Total Selling Price (Incl. Tax)",
+      "Supplier Name",
+      "Warehouse Location",
+      "Technical Specifications",
+    ];
+
+    const rows = inventoryItems.map((item) => [
+      `"${item.sku.replace(/"/g, '""')}"`,
+      `"${item.name.replace(/"/g, '""')}"`,
+      `"${(item.hsnCode || "").replace(/"/g, '""')}"`,
+      `"${(item.category || "").replace(/"/g, '""')}"`,
+      `"${(item.unit || "PCS").replace(/"/g, '""')}"`,
+      item.currentStock,
+      `"${item.status}"`,
+      item.purchaseRate,
+      item.sellingRate,
+      item.gstRate,
+      item.taxAmount,
+      item.totalSellingPrice,
+      `"${(item.supplierName || "").replace(/"/g, '""')}"`,
+      `"${(item.warehouseLocation || "").replace(/"/g, '""')}"`,
+      `"${(item.fullDescription || "").replace(/"/g, '""')}"`,
+    ]);
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute(
+      "download",
+      `VintexAir_Inventory_Stock_${new Date().toISOString().split("T")[0]}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // Pipeline board scroll ref & helper for easy mobile scrolling
   const pipelineBoardRef = React.useRef<HTMLDivElement>(null);
@@ -473,6 +1313,127 @@ export default function CRMPage() {
   // DELETE LEAD CONFIRMATION MODAL STATE
   const [deleteConfirmModalLead, setDeleteConfirmModalLead] = useState<LeadData | null>(null);
   const [deleteInputText, setDeleteInputText] = useState<string>("");
+
+  // DIRECT MANUAL LEAD CREATION MODAL STATE
+  const [isAddLeadModalOpen, setIsAddLeadModalOpen] = useState(false);
+  const [addLeadFullName, setAddLeadFullName] = useState("");
+  const [addLeadPhone, setAddLeadPhone] = useState("");
+  const [addLeadCountryCode, setAddLeadCountryCode] = useState("+91");
+  const [addLeadEmail, setAddLeadEmail] = useState("");
+  const [addLeadCampaign, setAddLeadCampaign] = useState("vintexair");
+  const [addLeadStage, setAddLeadStage] = useState("raw");
+  const [addLeadDealValue, setAddLeadDealValue] = useState("");
+  const [addLeadNote, setAddLeadNote] = useState("");
+  const [isAddingLead, setIsAddingLead] = useState(false);
+  const [addLeadError, setAddLeadError] = useState("");
+
+  const handleOpenAddLeadModal = () => {
+    setAddLeadFullName("");
+    setAddLeadPhone("");
+    setAddLeadCountryCode("+91");
+    setAddLeadEmail("");
+    setAddLeadCampaign(selectedCampaign === "all" ? "vintexair" : selectedCampaign);
+    setAddLeadStage("raw");
+    setAddLeadDealValue("");
+    setAddLeadNote("");
+    setAddLeadError("");
+    setIsAddLeadModalOpen(true);
+  };
+
+  const handleCreateLeadSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddLeadError("");
+
+    const cleanName = addLeadFullName.trim();
+    const cleanPhone = addLeadPhone.trim().replace(/\D/g, "");
+    const cleanEmail = addLeadEmail.trim().toLowerCase();
+
+    if (!cleanName) {
+      setAddLeadError("Please enter client full name.");
+      return;
+    }
+    if (!cleanPhone || cleanPhone.length < 7) {
+      setAddLeadError("Please enter a valid phone number (at least 7 digits).");
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes("@")) {
+      setAddLeadError("Please enter a valid email address.");
+      return;
+    }
+
+    setIsAddingLead(true);
+    try {
+      const todayStr = new Date().toISOString().split("T")[0];
+      const timestamp = new Date().toISOString();
+      const leadId = sanitizeEmailToId(cleanEmail);
+      const targetCampaign = addLeadCampaign || (selectedCampaign === "all" ? "vintexair" : selectedCampaign);
+
+      const initialNotes: StaffNote[] = addLeadNote.trim()
+        ? [
+            {
+              id: "note_" + Date.now(),
+              text: addLeadNote.trim(),
+              createdAt: timestamp,
+              author: currentUser?.email?.split("@")[0] || "CRM Staff",
+            },
+          ]
+        : [];
+
+      const newLeadPayload: LeadData = {
+        id: leadId,
+        fullName: cleanName,
+        email: cleanEmail,
+        phone: cleanPhone,
+        countryCode: addLeadCountryCode || "+91",
+        campaign: targetCampaign,
+        status: "partial",
+        pipelineStage: addLeadStage || "raw",
+        stageMovedAt: timestamp,
+        dealValue: addLeadDealValue ? parseFloat(addLeadDealValue) : undefined,
+        notes: initialNotes,
+        source: "crm",
+        sourceTag: "CRM",
+        addedBy: currentUser?.email || "CRM Staff",
+        createdDate: todayStr,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+
+      const res = await saveOrUpdateLead(newLeadPayload, leadId, todayStr, targetCampaign);
+      if (!res) {
+        throw new Error("Failed to save lead in database. Please check connection and try again.");
+      }
+
+      // Reactively update local lists
+      setAllLeadsList((prev) => {
+        const existsIndex = prev.findIndex((l) => l.id === leadId || l.email.toLowerCase() === cleanEmail);
+        if (existsIndex >= 0) {
+          const updated = [...prev];
+          updated[existsIndex] = newLeadPayload;
+          return updated;
+        }
+        return [newLeadPayload, ...prev];
+      });
+
+      setLeadsList((prev) => {
+        const existsIndex = prev.findIndex((l) => l.id === leadId || l.email.toLowerCase() === cleanEmail);
+        if (existsIndex >= 0) {
+          const updated = [...prev];
+          updated[existsIndex] = newLeadPayload;
+          return updated;
+        }
+        return [newLeadPayload, ...prev];
+      });
+
+      setIsAddLeadModalOpen(false);
+      alert(`✅ Lead "${cleanName}" successfully created in CRM with [CRM] Tag!`);
+    } catch (err: any) {
+      console.error("Error creating direct CRM lead:", err);
+      setAddLeadError(err?.message || "Failed to create lead. Please try again.");
+    } finally {
+      setIsAddingLead(false);
+    }
+  };
 
   const handleOpenLeadLogsModal = (lead: LeadData) => {
     setSelectedLeadForLogs(lead);
@@ -796,7 +1757,7 @@ export default function CRMPage() {
   const [blockReason, setBlockReason] = useState<string>("Marked as booked / Out of office");
   const [isSubmittingBlock, setIsSubmittingBlock] = useState<boolean>(false);
 
-  const currentActiveCampaign = selectedCampaign !== "all" && selectedCampaign ? selectedCampaign : "firstoptionagency";
+  const currentActiveCampaign = selectedCampaign !== "all" && selectedCampaign ? selectedCampaign : "vintexair";
 
   // Fetch list of all blocked dates & slots
   const fetchBlockedSlotsList = useCallback(async () => {
@@ -1353,7 +2314,9 @@ export default function CRMPage() {
     const matchesSearch =
       (lead.fullName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
       (lead.phone || "").includes(searchQuery) ||
-      (lead.email || "").toLowerCase().includes(searchQuery.toLowerCase());
+      (lead.email || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (lead.sourceTag || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (lead.source || "").toLowerCase().includes(searchQuery.toLowerCase());
 
     const matchesStatus = statusFilter === "all" ? true : lead.status === statusFilter;
 
@@ -1394,7 +2357,9 @@ export default function CRMPage() {
       const matchesSearch =
         (m.fullName || "").toLowerCase().includes(q) ||
         (m.phone || "").includes(q) ||
-        (m.email || "").toLowerCase().includes(q);
+        (m.email || "").toLowerCase().includes(q) ||
+        (m.sourceTag || "").toLowerCase().includes(q) ||
+        (m.source || "").toLowerCase().includes(q);
       if (!matchesSearch) return false;
     }
 
@@ -1456,13 +2421,98 @@ export default function CRMPage() {
       const nameMatch = (lead.fullName || "").toLowerCase().includes(q);
       const emailMatch = (lead.email || "").toLowerCase().includes(q);
       const phoneMatch = (lead.phone || "").includes(q);
-      if (!nameMatch && !emailMatch && !phoneMatch) return false;
+      const sourceMatch = (lead.sourceTag || "").toLowerCase().includes(q) || (lead.source || "").toLowerCase().includes(q);
+      if (!nameMatch && !emailMatch && !phoneMatch && !sourceMatch) return false;
     }
 
     return true;
   });
 
+  // Filtered Inventory Items
+  const filteredInventoryItems = inventoryItems.filter((item) => {
+    if (inventoryCategoryFilter !== "all" && item.category !== inventoryCategoryFilter) {
+      return false;
+    }
+    if (inventoryStatusFilter !== "all" && item.status !== inventoryStatusFilter) {
+      return false;
+    }
+    if (inventorySearchQuery.trim()) {
+      const q = inventorySearchQuery.trim().toLowerCase();
+      const matchSku = (item.sku || "").toLowerCase().includes(q);
+      const matchName = (item.name || "").toLowerCase().includes(q);
+      const matchHsn = (item.hsnCode || "").toLowerCase().includes(q);
+      const matchDesc = (item.fullDescription || "").toLowerCase().includes(q);
+      const matchSupplier = (item.supplierName || "").toLowerCase().includes(q);
+      const matchLoc = (item.warehouseLocation || "").toLowerCase().includes(q);
+      if (!matchSku && !matchName && !matchHsn && !matchDesc && !matchSupplier && !matchLoc) {
+        return false;
+      }
+    }
+    return true;
+  });
 
+  // Filtered Vendors
+  const filteredVendors = vendors.filter((v) => {
+    if (vendorSearchQuery.trim()) {
+      const q = vendorSearchQuery.trim().toLowerCase();
+      const matchName = (v.name || "").toLowerCase().includes(q);
+      const matchContact = (v.contactPerson || "").toLowerCase().includes(q);
+      const matchPhone = (v.phone || "").includes(q);
+      const matchGstin = (v.gstin || "").toLowerCase().includes(q);
+      const matchCity = (v.city || "").toLowerCase().includes(q);
+      if (!matchName && !matchContact && !matchPhone && !matchGstin && !matchCity) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  // Filtered Quotations
+  const filteredQuotations = quotations.filter((q) => {
+    if (selectedCampaign !== "all" && q.campaign && q.campaign !== selectedCampaign) {
+      return false;
+    }
+    if (quotationsStatusFilter !== "all" && q.status !== quotationsStatusFilter) {
+      return false;
+    }
+    
+    // Date Filtering
+    if (quotationsDatePreset === "today") {
+      const qDate = q.createdAt ? q.createdAt.split("T")[0] : "";
+      if (qDate !== todayStr) return false;
+    } else if (quotationsDatePreset === "last_7_days") {
+      const qDate = q.createdAt ? q.createdAt.split("T")[0] : "";
+      const d7AgoObj = new Date(today);
+      d7AgoObj.setDate(d7AgoObj.getDate() - 7);
+      const d7AgoStr = d7AgoObj.toISOString().split("T")[0];
+      if (qDate < d7AgoStr || qDate > todayStr) return false;
+    }
+
+    if (quotationsSearchQuery.trim()) {
+      const s = quotationsSearchQuery.trim().toLowerCase();
+      const matchNo = (q.quotationNo || "").toLowerCase().includes(s);
+      const matchClient = (q.clientName || "").toLowerCase().includes(s);
+      const matchPhone = (q.clientMobile || "").includes(s);
+      const matchEmail = (q.clientEmail || "").toLowerCase().includes(s);
+      const matchItems = (q.items || []).some((it) => (it.name || "").toLowerCase().includes(s) || (it.sku || "").toLowerCase().includes(s));
+      if (!matchNo && !matchClient && !matchPhone && !matchEmail && !matchItems) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  // Filtered Purchase Bills
+  const filteredPurchaseBills = purchaseBills.filter((b) => {
+    if (vendorSearchQuery.trim()) {
+      const q = vendorSearchQuery.trim().toLowerCase();
+      const matchNo = (b.billNo || "").toLowerCase().includes(q);
+      const matchVendor = (b.vendorName || "").toLowerCase().includes(q);
+      const matchGstin = (b.vendorGstin || "").toLowerCase().includes(q);
+      if (!matchNo && !matchVendor && !matchGstin) return false;
+    }
+    return true;
+  });
 
   // Calculate Metrics
   const totalLeadsCount = filteredLeads.length;
@@ -1644,11 +2694,11 @@ export default function CRMPage() {
           {/* Logo */}
           <div className="flex items-center space-x-3 px-2">
             <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-xs shadow">
-              FOA
+              VA
             </div>
             <div>
               <h2 className="text-sm font-bold text-slate-900 leading-tight">
-                First Option Agency
+                Vintex Air
                 <center>
                 CRM
                 </center>
@@ -1729,6 +2779,52 @@ export default function CRMPage() {
 
               <button
                 onClick={() => {
+                  changeTab("inventory");
+                  setIsMobileSidebarOpen(false);
+                }}
+                className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                  activeTab === "inventory"
+                    ? "bg-indigo-50 text-indigo-700 shadow-2xs font-extrabold border-l-4 border-indigo-600"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                <i className="fa-solid fa-boxes-stacked text-sm text-indigo-600"></i>
+                <div className="flex items-center justify-between w-full">
+                  <span>Inventory & Stock</span>
+                  {inventorySummary.lowStockCount > 0 ? (
+                    <span className="bg-amber-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full shadow-2xs" title={`${inventorySummary.lowStockCount} low stock`}>
+                      {inventorySummary.lowStockCount}
+                    </span>
+                  ) : (
+                    <span className="bg-slate-100 text-slate-600 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">
+                      {inventoryItems.length}
+                    </span>
+                  )}
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  changeTab("quotations");
+                  setIsMobileSidebarOpen(false);
+                }}
+                className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                  activeTab === "quotations"
+                    ? "bg-purple-50 text-purple-700 shadow-2xs font-extrabold border-l-4 border-purple-600"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                <i className="fa-solid fa-file-invoice text-sm text-purple-600"></i>
+                <div className="flex items-center justify-between w-full">
+                  <span>Quotations & Estimates</span>
+                  <span className="bg-purple-100 text-purple-800 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">
+                    {quotations.length}
+                  </span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
                   changeTab("tickets");
                   setIsMobileSidebarOpen(false);
                 }}
@@ -1759,6 +2855,21 @@ export default function CRMPage() {
               <div className="px-3 pb-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
                 System & Integrations
               </div>
+
+              <button
+                onClick={() => {
+                  changeTab("roles");
+                  setIsMobileSidebarOpen(false);
+                }}
+                className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                  activeTab === "roles"
+                    ? "bg-indigo-50 text-indigo-700 shadow-2xs font-extrabold border-l-4 border-indigo-600"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                <i className="fa-solid fa-user-shield text-sm text-indigo-600"></i>
+                <span>Role Management</span>
+              </button>
 
               <button
                 onClick={() => {
@@ -1826,6 +2937,12 @@ export default function CRMPage() {
                     ? "Kanban Pipeline Board"
                     : activeTab === "calendar"
                     ? "Meetings Calendar"
+                    : activeTab === "inventory"
+                    ? "Vintex Air Inventory & Stock"
+                    : activeTab === "quotations"
+                    ? "Vintex Air Quotations & Estimates"
+                    : activeTab === "tickets"
+                    ? "Customer Support Tickets"
                     : "Executive CRM"}
                 </h1>
                 <p className="text-[10px] sm:text-[11px] text-slate-500 hidden sm:block">
@@ -1833,21 +2950,47 @@ export default function CRMPage() {
                     ? "Drag-and-drop lead stage management with deal value tracking & date filters"
                     : activeTab === "calendar"
                     ? "Interactive visual calendar dashboard for managing all client appointments"
+                    : activeTab === "inventory"
+                    ? "Real-time stock management, HSN & GST calculations, purchases (Stock In), and sales (Stock Out)"
+                    : activeTab === "quotations"
+                    ? "Generate, print, and WhatsApp official Vintex Air client estimates with live stock deduction"
+                    : activeTab === "tickets"
+                    ? "Customer inquiries and ticket escalation center"
                     : "Real-time tracking of leads, survey qualifications, and booked strategy meetings"}
                 </p>
               </div>
             </div>
 
-            <button
-              onClick={fetchData}
-              disabled={isDataLoading}
-              className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-600 text-xs font-bold hover:bg-indigo-100 flex items-center justify-center sm:hidden"
-            >
-              <i className={`fa-solid fa-rotate-right ${isDataLoading ? "fa-spin" : ""}`}></i>
-            </button>
+            <div className="flex items-center space-x-1.5 sm:hidden">
+              <button
+                onClick={handleOpenAddLeadModal}
+                className="w-8 h-8 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 flex items-center justify-center shadow-xs cursor-pointer"
+                title="Add New Lead"
+              >
+                <i className="fa-solid fa-user-plus text-xs"></i>
+              </button>
+
+              <button
+                onClick={fetchData}
+                disabled={isDataLoading}
+                className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-600 text-xs font-bold hover:bg-indigo-100 flex items-center justify-center"
+              >
+                <i className={`fa-solid fa-rotate-right ${isDataLoading ? "fa-spin" : ""}`}></i>
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center space-x-2 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0">
+            <button
+              onClick={handleResetAndSeedDatabase}
+              disabled={isSeedingDb}
+              className="px-3 py-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-xs font-extrabold flex items-center justify-center space-x-1.5 transition-all shadow-2xs cursor-pointer flex-shrink-0"
+              title="Reset database and seed authentic Vintex Air industrial dummy data"
+            >
+              <i className={`fa-solid fa-arrows-rotate ${isSeedingDb ? "fa-spin text-purple-600" : "text-purple-600"}`}></i>
+              <span>{isSeedingDb ? "Seeding..." : "🔄 Reset & Seed Vintex Data"}</span>
+            </button>
+
             <select
               value={selectedCampaign}
               onChange={(e) => setSelectedCampaign(e.target.value)}
@@ -1862,6 +3005,15 @@ export default function CRMPage() {
             </select>
 
             <button
+              onClick={handleOpenAddLeadModal}
+              className="hidden sm:flex px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold items-center justify-center space-x-1.5 transition-all shadow-sm cursor-pointer flex-shrink-0"
+              title="Manually Add New Lead Directly to CRM"
+            >
+              <i className="fa-solid fa-user-plus text-xs"></i>
+              <span>+ Add Lead</span>
+            </button>
+
+            <button
               onClick={fetchData}
               disabled={isDataLoading}
               className="hidden sm:flex px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-600 text-xs font-bold hover:bg-indigo-100 items-center justify-center space-x-1.5 transition-colors"
@@ -1872,9 +3024,232 @@ export default function CRMPage() {
           </div>
         </header>
 
+        {/* Seeding Feedback Toast */}
+        {seedFeedback && (
+          <div className="mx-3 sm:mx-6 p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold rounded-2xl flex items-center justify-between animate-in fade-in">
+            <div className="flex items-center space-x-2">
+              <i className="fa-solid fa-circle-check text-emerald-600 text-sm"></i>
+              <span>{seedFeedback}</span>
+            </div>
+            <button
+              onClick={() => setSeedFeedback(null)}
+              className="text-emerald-700 hover:text-emerald-900 text-xs font-black ml-2"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Dashboard Body */}
         <main className="p-3 sm:p-6 space-y-4 sm:space-y-6 w-full max-w-full">
-          {activeTab === "tickets" ? (
+          {activeTab === "inventory" ? (
+            <div className="space-y-5 font-sans">
+              {/* TOP KPI STATS SUMMARY CARDS */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                {/* Stat 1: Total SKUs */}
+                <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-xs flex items-center space-x-3.5">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 text-lg sm:text-xl shadow-2xs flex-shrink-0">
+                    <i className="fa-solid fa-boxes-stacked"></i>
+                  </div>
+                  <div className="truncate">
+                    <span className="text-[10px] sm:text-xs font-extrabold text-slate-500 uppercase tracking-wider block">
+                      Active SKUs
+                    </span>
+                    <div className="text-lg sm:text-2xl font-black text-slate-900 leading-none mt-1">
+                      {inventorySummary.totalItems}
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium truncate block mt-0.5">
+                      Catalog Models
+                    </span>
+                  </div>
+                </div>
+
+                {/* Stat 2: Total Units */}
+                <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-xs flex items-center space-x-3.5">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600 text-lg sm:text-xl shadow-2xs flex-shrink-0">
+                    <i className="fa-solid fa-warehouse"></i>
+                  </div>
+                  <div className="truncate">
+                    <span className="text-[10px] sm:text-xs font-extrabold text-slate-500 uppercase tracking-wider block">
+                      Total Units In Stock
+                    </span>
+                    <div className="text-lg sm:text-2xl font-black text-slate-900 leading-none mt-1">
+                      {inventorySummary.totalStockUnits.toLocaleString("en-IN")} <span className="text-xs font-bold text-slate-500">PCS</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium truncate block mt-0.5">
+                      Physical Inventory
+                    </span>
+                  </div>
+                </div>
+
+                {/* Stat 3: Valuation */}
+                <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-xs flex items-center space-x-3.5">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-purple-50 border border-purple-100 flex items-center justify-center text-purple-600 text-lg sm:text-xl shadow-2xs flex-shrink-0">
+                    <i className="fa-solid fa-indian-rupee-sign"></i>
+                  </div>
+                  <div className="truncate">
+                    <span className="text-[10px] sm:text-xs font-extrabold text-slate-500 uppercase tracking-wider block">
+                      Stock Valuation
+                    </span>
+                    <div className="text-lg sm:text-2xl font-black text-slate-900 leading-none mt-1 truncate">
+                      ₹{inventorySummary.totalStockValuation.toLocaleString("en-IN")}
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium truncate block mt-0.5">
+                      Selling Price Basis
+                    </span>
+                  </div>
+                </div>
+
+                {/* Stat 4: Low Stock Alert */}
+                <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-xs flex items-center space-x-3.5">
+                  <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center text-lg sm:text-xl shadow-2xs flex-shrink-0 ${
+                    inventorySummary.lowStockCount > 0 || inventorySummary.outOfStockCount > 0
+                      ? "bg-amber-50 border border-amber-200 text-amber-600"
+                      : "bg-slate-50 border border-slate-200 text-slate-400"
+                  }`}>
+                    <i className="fa-solid fa-triangle-exclamation"></i>
+                  </div>
+                  <div className="truncate">
+                    <span className="text-[10px] sm:text-xs font-extrabold text-slate-500 uppercase tracking-wider block">
+                      Stock Alerts
+                    </span>
+                    <div className="text-lg sm:text-2xl font-black text-slate-900 leading-none mt-1">
+                      {inventorySummary.lowStockCount} <span className="text-xs font-bold text-amber-600">Low</span> / {inventorySummary.outOfStockCount} <span className="text-xs font-bold text-rose-600">Out</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium truncate block mt-0.5">
+                      Need Reorder
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* MODULAR INVENTORY WORKSPACE */}
+              <div className="space-y-4 font-sans">
+                {/* Sub-Tabs Navigation Pills */}
+                <div className="flex items-center justify-between bg-white border border-slate-200 p-2 rounded-2xl shadow-2xs overflow-x-auto gap-2">
+                  <div className="flex items-center space-x-1.5">
+                    <button
+                      onClick={() => setInventoryViewMode("products")}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center space-x-1.5 ${
+                        inventoryViewMode === "products"
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                      }`}
+                    >
+                      <i className="fa-solid fa-boxes-stacked text-xs"></i>
+                      <span>Products ({inventoryItems.length})</span>
+                    </button>
+
+                    <button
+                      onClick={() => setInventoryViewMode("vendors")}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center space-x-1.5 ${
+                        inventoryViewMode === "vendors"
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                      }`}
+                    >
+                      <i className="fa-solid fa-industry text-xs"></i>
+                      <span>Vendors Registry ({vendors.length})</span>
+                    </button>
+
+                    <button
+                      onClick={() => setInventoryViewMode("ledger")}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center space-x-1.5 ${
+                        inventoryViewMode === "ledger"
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                      }`}
+                    >
+                      <i className="fa-solid fa-clock-rotate-left text-xs"></i>
+                      <span>Stock Ledger ({inventoryTransactions.length})</span>
+                    </button>
+
+                    <button
+                      onClick={() => setInventoryViewMode("purchase_bills")}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center space-x-1.5 ${
+                        inventoryViewMode === "purchase_bills"
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                      }`}
+                    >
+                      <i className="fa-solid fa-receipt text-xs"></i>
+                      <span>Purchase Bills ({purchaseBills.length})</span>
+                    </button>
+                  </div>
+
+                  {/* Standalone Page Links */}
+                  <div className="hidden lg:flex items-center space-x-1 text-[11px] font-bold text-slate-400">
+                    <span>Open standalone:</span>
+                    <a
+                      href="/crms/inventory/products"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-indigo-600 rounded-lg border border-slate-200"
+                    >
+                      Products ↗
+                    </a>
+                    <a
+                      href="/crms/inventory/vendors"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-indigo-600 rounded-lg border border-slate-200"
+                    >
+                      Vendors ↗
+                    </a>
+                  </div>
+                </div>
+
+                {/* Sub-tab view components */}
+                {inventoryViewMode === "products" && (
+                  <ProductsCatalogView
+                    products={inventoryItems}
+                    vendors={vendors}
+                    isLoading={isInventoryLoading}
+                    onRefresh={fetchInventoryData}
+                    onOpenStockIn={(item) => handleOpenStockInModal(item)}
+                    onOpenStockOut={(item) => handleOpenStockOutModal(item)}
+                  />
+                )}
+
+                {inventoryViewMode === "vendors" && (
+                  <VendorsRegistryView
+                    vendors={vendors}
+                    isLoading={isInventoryLoading}
+                    onRefresh={fetchInventoryData}
+                  />
+                )}
+
+                {inventoryViewMode === "ledger" && (
+                  <StockLedgerView
+                    transactions={inventoryTransactions}
+                    inventoryItems={inventoryItems}
+                    vendors={vendors}
+                    isLoading={isInventoryLoading}
+                    onRefresh={fetchInventoryData}
+                  />
+                )}
+
+                {inventoryViewMode === "purchase_bills" && (
+                  <PurchaseBillsView
+                    bills={purchaseBills}
+                    vendors={vendors}
+                    isLoading={isInventoryLoading}
+                    onRefresh={fetchInventoryData}
+                  />
+                )}
+              </div>
+            </div>
+          ) : activeTab === "quotations" ? (
+            <QuotationsWorkspaceView
+              quotations={quotations}
+              inventoryItems={inventoryItems}
+              isLoading={isQuotationsLoading}
+              onRefresh={async () => {
+                await fetchQuotationsData();
+                await fetchInventoryData();
+              }}
+            />
+          ) : activeTab === "tickets" ? (
             <div className="space-y-5 font-sans">
               {/* Top Header Card */}
               <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl p-5 shadow-sm space-y-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -2181,10 +3556,18 @@ export default function CRMPage() {
                     />
 
                     <button
-                      onClick={() => setIsManagePipelineModalOpen(true)}
+                      onClick={handleOpenAddLeadModal}
                       className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold px-3 py-1.5 rounded-xl shadow-2xs transition-colors flex items-center space-x-1.5 cursor-pointer"
                     >
-                      <i className="fa-solid fa-gear"></i>
+                      <i className="fa-solid fa-user-plus"></i>
+                      <span>+ Add Lead</span>
+                    </button>
+
+                    <button
+                      onClick={() => setIsManagePipelineModalOpen(true)}
+                      className="bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs transition-colors flex items-center space-x-1.5 cursor-pointer"
+                    >
+                      <i className="fa-solid fa-gear text-indigo-600"></i>
                       <span>Manage Stages ⚙️</span>
                     </button>
                   </div>
@@ -2493,6 +3876,12 @@ export default function CRMPage() {
                                   </div>
 
                                   <div className="flex items-center space-x-1 flex-shrink-0">
+                                    {(lead.source === "crm" || lead.sourceTag === "CRM") && (
+                                      <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded border bg-purple-100 text-purple-800 border-purple-300 shadow-2xs flex items-center space-x-0.5" title="Directly added from CRM Dashboard">
+                                        <i className="fa-solid fa-bolt text-[8px] text-purple-600"></i>
+                                        <span>CRM</span>
+                                      </span>
+                                    )}
                                     <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded border ${stage.bgTag}`}>
                                       {stage.name}
                                     </span>
@@ -3128,6 +4517,15 @@ export default function CRMPage() {
                         onChange={(e) => setSearchQuery(e.target.value)}
                         className="bg-white border border-slate-300 rounded-xl px-3 py-1 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-indigo-600 flex-1 sm:w-44"
                       />
+
+                      <button
+                        onClick={handleOpenAddLeadModal}
+                        className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm flex items-center space-x-1.5 cursor-pointer whitespace-nowrap"
+                        title="Manually Add Lead"
+                      >
+                        <i className="fa-solid fa-user-plus text-[11px]"></i>
+                        <span>+ Add Lead</span>
+                      </button>
                     </div>
                   )}
 
@@ -3202,7 +4600,7 @@ export default function CRMPage() {
                             const whatsappSurveyUrl = `https://api.whatsapp.com/send?phone=${
                               lead.countryCode ? lead.countryCode.replace("+", "") : "91"
                             }${lead.phone}&text=${encodeURIComponent(
-                              `Hi ${lead.fullName || "there"}, thanks for requesting a consultation with First Option Agency! Please complete your 30-second business survey here to lock your call: ${
+                              `Hi ${lead.fullName || "there"}, thanks for requesting a consultation with Vintex Air! Please complete your 30-second business survey here to lock your call: ${
                                 lead.links?.surveyUrl || `${window.location.origin}/?step=survey&leadId=${lead.id}&createdDate=${lead.createdDate}`
                               }`
                             )}`;
@@ -3231,6 +4629,13 @@ export default function CRMPage() {
                                   </div>
 
                                   <div className="flex flex-col items-end space-y-1">
+                                    {(lead.source === "crm" || lead.sourceTag === "CRM") && (
+                                      <span className="bg-purple-100 text-purple-800 border border-purple-300 font-extrabold text-[9px] px-2 py-0.5 rounded-full flex items-center space-x-0.5">
+                                        <i className="fa-solid fa-bolt text-[8px] text-purple-600"></i>
+                                        <span>CRM Direct</span>
+                                      </span>
+                                    )}
+
                                     {lead.onboarded && (
                                       <span className="bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold text-[9px] px-2 py-0.5 rounded-full">
                                         ✓ Onboarded Done
@@ -3362,7 +4767,7 @@ export default function CRMPage() {
                                 const whatsappSurveyUrl = `https://api.whatsapp.com/send?phone=${
                                   lead.countryCode ? lead.countryCode.replace("+", "") : "91"
                                 }${lead.phone}&text=${encodeURIComponent(
-                                  `Hi ${lead.fullName || "there"}, thanks for requesting a consultation with First Option Agency! Please complete your 30-second business survey here to lock your call: ${
+                                  `Hi ${lead.fullName || "there"}, thanks for requesting a consultation with Vintex Air! Please complete your 30-second business survey here to lock your call: ${
                                     lead.links?.surveyUrl || `${window.location.origin}/?step=survey&leadId=${lead.id}&createdDate=${lead.createdDate}`
                                   }`
                                 )}`;
@@ -3378,8 +4783,14 @@ export default function CRMPage() {
                                     className="hover:bg-indigo-50/40 cursor-pointer transition-colors group"
                                   >
                                     <td className="px-4 py-3">
-                                      <div className="font-bold text-slate-900 group-hover:text-indigo-600 flex items-center space-x-1.5">
+                                      <div className="font-bold text-slate-900 group-hover:text-indigo-600 flex items-center space-x-1.5 flex-wrap">
                                         <span>{lead.fullName || "Anonymous"}</span>
+                                        {(lead.source === "crm" || lead.sourceTag === "CRM") && (
+                                          <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-300 font-extrabold px-1.5 py-0.5 rounded flex items-center space-x-0.5 shadow-2xs" title="Directly added from CRM Dashboard">
+                                            <i className="fa-solid fa-bolt text-[8px] text-purple-600"></i>
+                                            <span>CRM</span>
+                                          </span>
+                                        )}
                                         {lead.onboarded && (
                                           <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold px-1.5 py-0.5 rounded">
                                             ✓ Onboarded Done
@@ -3562,7 +4973,15 @@ export default function CRMPage() {
                                   {m.fullName?.charAt(0).toUpperCase() || "M"}
                                 </div>
                                 <div className="truncate">
-                                  <h4 className="text-sm font-bold text-slate-900 truncate leading-snug">{m.fullName}</h4>
+                                  <div className="flex items-center space-x-1.5">
+                                    <h4 className="text-sm font-bold text-slate-900 truncate leading-snug">{m.fullName}</h4>
+                                    {(m.source === "crm" || m.sourceTag === "CRM") && (
+                                      <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-300 font-extrabold px-1.5 py-0.2 rounded shadow-2xs flex items-center space-x-0.5">
+                                        <i className="fa-solid fa-bolt text-[8px] text-purple-600"></i>
+                                        <span>CRM</span>
+                                      </span>
+                                    )}
+                                  </div>
                                   <p className="text-[11px] text-slate-400 truncate">{m.email}</p>
                                 </div>
                               </div>
@@ -3653,8 +5072,14 @@ export default function CRMPage() {
                                   </td>
 
                                   <td className="px-4 py-3">
-                                    <div className="font-bold text-slate-900 group-hover:text-indigo-600 flex items-center space-x-1">
+                                    <div className="font-bold text-slate-900 group-hover:text-indigo-600 flex items-center space-x-1.5 flex-wrap">
                                       <span>{m.fullName}</span>
+                                      {(m.source === "crm" || m.sourceTag === "CRM") && (
+                                        <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-300 font-extrabold px-1.5 py-0.5 rounded shadow-2xs flex items-center space-x-0.5">
+                                          <i className="fa-solid fa-bolt text-[8px] text-purple-600"></i>
+                                          <span>CRM</span>
+                                        </span>
+                                      )}
                                       <i className="fa-solid fa-chevron-right text-[10px] text-slate-300 group-hover:text-indigo-600 transition-colors"></i>
                                     </div>
                                     <div className="text-[11px] text-slate-400">{m.email}</div>
@@ -4149,9 +5574,17 @@ export default function CRMPage() {
                   {selectedLead.fullName?.charAt(0).toUpperCase() || "L"}
                 </div>
                 <div className="truncate">
-                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 truncate leading-tight">
-                    {selectedLead.fullName || "Anonymous Lead"}
-                  </h3>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-xs sm:text-sm font-bold text-slate-900 truncate leading-tight">
+                      {selectedLead.fullName || "Anonymous Lead"}
+                    </h3>
+                    {(selectedLead.source === "crm" || selectedLead.sourceTag === "CRM") && (
+                      <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-300 font-extrabold px-2 py-0.5 rounded-full flex items-center space-x-1 shadow-2xs flex-shrink-0">
+                        <i className="fa-solid fa-bolt text-purple-600 text-[8px]"></i>
+                        <span>CRM Direct</span>
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[11px] text-slate-500 truncate">{selectedLead.email}</p>
                 </div>
               </div>
@@ -4254,6 +5687,80 @@ export default function CRMPage() {
                     <span>WhatsApp</span>
                   </a>
                 </div>
+              </div>
+
+              {/* LEAD CLIENT QUOTATIONS & ESTIMATES SECTION */}
+              <div className="bg-white border border-purple-200 rounded-2xl p-3.5 sm:p-4 space-y-3.5 shadow-sm bg-purple-50/20 font-sans">
+                <div className="flex items-center justify-between border-b border-purple-100 pb-2.5">
+                  <div className="flex items-center space-x-2">
+                    <span className="w-7 h-7 rounded-xl bg-purple-600 text-white flex items-center justify-center text-xs font-bold shadow-2xs">
+                      📑
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-extrabold text-slate-900">
+                        Client Quotations & Estimates
+                      </h4>
+                      <p className="text-[10px] text-slate-500 font-medium">
+                        Official estimates with HSN, GST tax, and stock sync
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOpenQuotationCreatorForLead(selectedLead)}
+                    className="bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-[11px] px-3 py-1.5 rounded-xl shadow-xs transition-all flex items-center space-x-1.5 cursor-pointer flex-shrink-0"
+                  >
+                    <i className="fa-solid fa-plus text-[10px]"></i>
+                    <span>+ Create Quote</span>
+                  </button>
+                </div>
+
+                {/* Existing Quotations for this Lead */}
+                {quotations.filter((q) => q.leadId === selectedLead.id || (selectedLead.phone && q.clientMobile === selectedLead.phone)).length === 0 ? (
+                  <div className="p-3 bg-white border border-slate-200 rounded-xl text-center space-y-1 text-slate-500">
+                    <p className="text-xs font-medium">No quotation created for this lead yet.</p>
+                    <p className="text-[10px] text-slate-400">Click &quot;+ Create Quote&quot; above to issue an estimate pre-filled with this client&apos;s details.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {quotations
+                      .filter((q) => q.leadId === selectedLead.id || (selectedLead.phone && q.clientMobile === selectedLead.phone))
+                      .map((q) => (
+                        <div key={q.id} className="p-3 bg-white border border-purple-200 rounded-xl shadow-2xs space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-xs font-black bg-purple-100 text-purple-900 border border-purple-300 px-2 py-0.5 rounded shadow-2xs">
+                              #{q.quotationNo} ({q.quotationDate})
+                            </span>
+                            <span className="font-mono font-black text-emerald-700 text-xs">
+                              ₹{q.totalAmount.toLocaleString("en-IN")}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-600 truncate">
+                            {(q.items || []).map((it) => `${it.qty}x ${it.name}`).join(", ")}
+                          </div>
+                          <div className="flex items-center justify-end space-x-3 pt-1 border-t border-slate-100">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenQuotationViewModal(q)}
+                              className="text-[11px] font-bold text-purple-700 hover:text-purple-900 flex items-center space-x-1 cursor-pointer"
+                            >
+                              <i className="fa-solid fa-eye text-[10px]"></i>
+                              <span>View / Print</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleShareQuotationWhatsApp(q)}
+                              className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 flex items-center space-x-1 cursor-pointer"
+                            >
+                              <i className="fa-brands fa-whatsapp text-xs"></i>
+                              <span>WhatsApp</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </div>
 
               {/* SCHEDULED DATE & TIME WHATSAPP BROADCASTS SECTION */}
@@ -4781,8 +6288,12 @@ export default function CRMPage() {
               {/* TECHNICAL & LINKS SECTION */}
               <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 sm:p-4 space-y-2 text-xs">
                 <div className="flex justify-between items-center text-slate-500 text-[11px]">
-                  <span>Campaign: <strong className="text-slate-800">{selectedLead.campaign || "firstoptionagency"}</strong></span>
+                  <span>Source: <strong className={selectedLead.source === "crm" || selectedLead.sourceTag === "CRM" ? "text-purple-700 font-extrabold" : "text-slate-800"}>{selectedLead.source === "crm" || selectedLead.sourceTag === "CRM" ? "⚡ Direct CRM Upload" : "Web / Funnel Form"}</strong></span>
                   <span>Created: <strong className="text-slate-800">{selectedLead.createdDate}</strong></span>
+                </div>
+                <div className="flex justify-between items-center text-slate-500 text-[11px]">
+                  <span>Campaign: <strong className="text-slate-800">{selectedLead.campaign || "firstoptionagency"}</strong></span>
+                  {selectedLead.addedBy && <span>Added By: <strong className="text-slate-800">{selectedLead.addedBy}</strong></span>}
                 </div>
 
                 {selectedLead.links?.surveyUrl && (
@@ -4804,9 +6315,249 @@ export default function CRMPage() {
         </div>
       )}
 
+      {/* DIRECT MANUAL LEAD UPLOAD SLIDE-OVER DRAWER */}
+      {isAddLeadModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-hidden bg-slate-900/50 backdrop-blur-xs flex justify-end font-sans animate-in fade-in duration-150">
+          <div
+            className="absolute inset-0"
+            onClick={() => !isAddingLead && setIsAddLeadModalOpen(false)}
+          />
 
+          <div className="relative w-full sm:max-w-lg bg-white h-full shadow-2xl flex flex-col font-sans border-l border-slate-200 z-10 overflow-hidden animate-in slide-in-from-right duration-200">
+            {/* Drawer Header */}
+            <div className="px-4 py-3.5 sm:px-5 sm:py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between sticky top-0 z-20">
+              <div className="flex items-center space-x-3 truncate">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-indigo-600 text-white font-bold text-sm sm:text-base flex items-center justify-center shadow-sm flex-shrink-0">
+                  <i className="fa-solid fa-user-plus text-sm"></i>
+                </div>
+                <div className="truncate">
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 truncate leading-tight">
+                    Add New Lead (Direct Upload)
+                  </h3>
+                  <p className="text-[11px] text-slate-500 truncate">Enter client contact info to add directly into CRM</p>
+                </div>
+              </div>
 
+              <button
+                type="button"
+                onClick={() => !isAddingLead && setIsAddLeadModalOpen(false)}
+                className="w-8 h-8 rounded-full text-slate-500 hover:text-slate-900 hover:bg-slate-200/80 flex items-center justify-center text-sm transition-colors cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
 
+            {/* Drawer Form */}
+            <form onSubmit={handleCreateLeadSubmit} className="flex-1 flex flex-col justify-between overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+                {/* Direct CRM Tag Info Banner */}
+                <div className="bg-purple-50/80 border border-purple-200 rounded-2xl p-3.5 space-y-1 text-purple-900 shadow-2xs">
+                  <div className="flex items-center space-x-2">
+                    <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center text-[10px] font-bold">⚡</span>
+                    <h4 className="text-xs font-extrabold">Direct CRM Upload</h4>
+                  </div>
+                  <p className="text-[11px] text-purple-800 leading-relaxed">
+                    This lead will automatically carry the <span className="bg-purple-200 text-purple-900 font-extrabold px-1.5 py-0.5 rounded border border-purple-300 font-mono text-[10px]">CRM</span> badge across your Kanban board, table lists, and meetings.
+                  </p>
+                </div>
+
+                {/* Section 1: Contact Details */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
+                    <i className="fa-solid fa-address-card text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      1. Contact Details
+                    </h4>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Client Full Name <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Rajesh Kumar"
+                      value={addLeadFullName}
+                      onChange={(e) => setAddLeadFullName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Mobile Phone Number <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="flex items-center space-x-2">
+                      <select
+                        value={addLeadCountryCode}
+                        onChange={(e) => setAddLeadCountryCode(e.target.value)}
+                        className="bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2.5 text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600 w-32 cursor-pointer"
+                      >
+                        <option value="+91">🇮🇳 +91 (IN)</option>
+                        <option value="+1">🇺🇸 +1 (US/CA)</option>
+                        <option value="+44">🇬🇧 +44 (UK)</option>
+                        <option value="+971">🇦🇪 +971 (UAE)</option>
+                        <option value="+966">🇸🇦 +966 (SA)</option>
+                        <option value="+61">🇦🇺 +61 (AU)</option>
+                        <option value="+65">🇸🇬 +65 (SG)</option>
+                        <option value="+49">🇩🇪 +49 (DE)</option>
+                        <option value="+33">🇫🇷 +33 (FR)</option>
+                        <option value="+92">🇵🇰 +92 (PK)</option>
+                        <option value="+880">🇧🇩 +880 (BD)</option>
+                        <option value="+977">🇳🇵 +977 (NP)</option>
+                      </select>
+                      <input
+                        type="tel"
+                        required
+                        placeholder="e.g. 9876543210"
+                        value={addLeadPhone}
+                        onChange={(e) => setAddLeadPhone(e.target.value)}
+                        className="flex-1 bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400 placeholder:font-sans"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Email Address <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="e.g. rajesh@example.com"
+                      value={addLeadEmail}
+                      onChange={(e) => setAddLeadEmail(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                    />
+                  </div>
+                </div>
+
+                {/* Section 2: Pipeline & CRM Assignment */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-200/80 pb-2">
+                    <i className="fa-solid fa-sliders text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      2. Pipeline & Deal Assignment
+                    </h4>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Target Campaign</label>
+                      <select
+                        value={addLeadCampaign}
+                        onChange={(e) => setAddLeadCampaign(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                      >
+                        {Object.keys(CAMPAIGNS).map((key) => (
+                          <option key={key} value={key}>
+                            {CAMPAIGNS[key].title}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Initial Pipeline Stage</label>
+                      <select
+                        value={addLeadStage}
+                        onChange={(e) => setAddLeadStage(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-indigo-700 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                      >
+                        {activePipelineStages.map((st) => (
+                          <option key={st.id} value={st.id}>
+                            {st.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Estimated Deal Value (₹)</label>
+                      <input
+                        type="number"
+                        placeholder="e.g. 50000"
+                        value={addLeadDealValue}
+                        onChange={(e) => setAddLeadDealValue(e.target.value)}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-indigo-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Source Attribution</label>
+                      <div className="h-9 flex items-center">
+                        <span className="bg-purple-100 text-purple-800 border border-purple-300 text-xs font-extrabold px-3 py-1.5 rounded-xl shadow-2xs flex items-center space-x-1.5">
+                          <i className="fa-solid fa-bolt text-purple-600 text-xs"></i>
+                          <span>Direct CRM Upload</span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 3: Staff Remarks / Initial Note (Optional) */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-2 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
+                    <i className="fa-solid fa-note-sticky text-amber-500 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      3. Staff Notes / Remark (Optional)
+                    </h4>
+                  </div>
+                  <textarea
+                    rows={3}
+                    placeholder="Add initial notes (e.g. Direct phone inquiry, met at conference, special requirements)..."
+                    value={addLeadNote}
+                    onChange={(e) => setAddLeadNote(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-xs font-medium text-slate-900 focus:outline-none focus:border-indigo-600 placeholder:text-slate-400"
+                  />
+                </div>
+
+                {/* Error Banner */}
+                {addLeadError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold p-3.5 rounded-2xl flex items-center space-x-2 animate-in fade-in">
+                    <i className="fa-solid fa-triangle-exclamation text-rose-600 text-sm flex-shrink-0"></i>
+                    <span>{addLeadError}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Drawer Footer (Sticky Bottom) */}
+              <div className="px-4 py-3.5 sm:px-5 sm:py-4 border-t border-slate-200 bg-slate-50 flex items-center space-x-3 sticky bottom-0 z-20">
+                <button
+                  type="button"
+                  disabled={isAddingLead}
+                  onClick={() => setIsAddLeadModalOpen(false)}
+                  className="flex-1 bg-white hover:bg-slate-100 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-300 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isAddingLead}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+                >
+                  {isAddingLead ? (
+                    <>
+                      <i className="fa-solid fa-spinner fa-spin text-xs"></i>
+                      <span>Uploading to CRM...</span>
+                    </>
+                  ) : (
+                    <>
+                      <i className="fa-solid fa-user-plus text-xs"></i>
+                      <span>Save & Add Lead 🚀</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MANAGE PIPELINE STAGES & RECYCLE BIN MODAL */}
       {isManagePipelineModalOpen && (
@@ -5769,6 +7520,1156 @@ export default function CRMPage() {
               >
                 <i className={`fa-solid fa-trash-can ${isDeletingLead ? "fa-spin" : ""}`}></i>
                 <span>{isDeletingLead ? "Deleting..." : "Permanently Delete Lead"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* VINTEX AIR INVENTORY DRAWERS & MODALS                     */}
+      {/* ======================================================== */}
+
+      {/* 1. ADD / EDIT PRODUCT SLIDE-OVER DRAWER */}
+      {isProductDrawerOpen && (
+        <div className="fixed inset-0 z-50 overflow-hidden bg-slate-900/50 backdrop-blur-xs flex justify-end font-sans animate-in fade-in duration-150">
+          <div
+            className="absolute inset-0"
+            onClick={() => !isSavingProduct && setIsProductDrawerOpen(false)}
+          />
+
+          <div className="relative w-full sm:max-w-xl bg-white h-full shadow-2xl flex flex-col font-sans border-l border-slate-200 z-10 overflow-hidden animate-in slide-in-from-right duration-200">
+            {/* Drawer Header */}
+            <div className="px-4 py-3.5 sm:px-5 sm:py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between sticky top-0 z-20">
+              <div className="flex items-center space-x-3 truncate">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-indigo-600 text-white font-bold text-sm sm:text-base flex items-center justify-center shadow-sm flex-shrink-0">
+                  <i className="fa-solid fa-boxes-stacked text-sm"></i>
+                </div>
+                <div className="truncate">
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 truncate leading-tight">
+                    {editingItem ? `Edit Product: ${editingItem.sku}` : "Add New Inventory Product"}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 truncate">
+                    Industrial equipment specifications, HSN code, and tax configuration
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => !isSavingProduct && setIsProductDrawerOpen(false)}
+                className="w-8 h-8 rounded-full text-slate-500 hover:text-slate-900 hover:bg-slate-200/80 flex items-center justify-center text-sm transition-colors cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            {/* Quick Template Fill Button (If new item) */}
+            {!editingItem && (
+              <div className="bg-indigo-50/70 border-b border-indigo-100 px-4 py-2.5 flex items-center justify-between">
+                <span className="text-[11px] font-extrabold text-indigo-900 flex items-center space-x-1.5">
+                  <span>✨ Need a quick sample template?</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProductFormSku("VA16-U30");
+                    setProductFormName("( VA16- U30 ) EVAPORATIVE AIR COOLER, 30000 CMH , TOP DISCHARGE");
+                    setProductFormDescription("3 KW 415V, PREMIUM QUALITY MOTOR COPER WINDING , SINGLE SPEED , AXIAL FAN TYPE , 4 SIDE 100 MM THECKNES BEST QUALITY COOLING PADS, SUMMERSIBLE 75W PUMP, AUTO DRAIN & WATER BALL AUTO SYSTEM");
+                    setProductFormHsn("84796000");
+                    setProductFormCategory("Evaporative Air Coolers");
+                    setProductFormUnit("PCS");
+                    setProductFormCurrentStock("1");
+                    setProductFormMinAlert("2");
+                    setProductFormPurchaseRate("50000");
+                    setProductFormSellingRate("65000");
+                    setProductFormGstRate("18");
+                    setProductFormSupplier("Vintex Air Manufacturing Unit");
+                    setProductFormLocation("Main Plant - Bay A1");
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-black text-[10px] px-2.5 py-1 rounded-lg shadow-2xs transition-all cursor-pointer flex items-center space-x-1"
+                >
+                  <i className="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
+                  <span>Fill Sample Cooler (VA16-U30)</span>
+                </button>
+              </div>
+            )}
+
+            {/* Drawer Form */}
+            <form onSubmit={handleSaveProductSubmit} className="flex-1 flex flex-col justify-between overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+                {/* SECTION 1: BASIC MODEL & TITLE */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
+                    <i className="fa-solid fa-tag text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      1. Product Identification
+                    </h4>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Model / SKU Code <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. VA16-U30"
+                        value={productFormSku}
+                        onChange={(e) => setProductFormSku(e.target.value.toUpperCase())}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400 uppercase"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        HSN Code <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. 84796000"
+                        value={productFormHsn}
+                        onChange={(e) => setProductFormHsn(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Product Full Title / Model Name <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. ( VA16- U30 ) EVAPORATIVE AIR COOLER, 30000 CMH , TOP DISCHARGE"
+                      value={productFormName}
+                      onChange={(e) => setProductFormName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Category</label>
+                      <select
+                        value={productFormCategory}
+                        onChange={(e) => setProductFormCategory(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                      >
+                        {VINTEX_INVENTORY_CATEGORIES.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Unit of Measure</label>
+                      <select
+                        value={productFormUnit}
+                        onChange={(e) => setProductFormUnit(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                      >
+                        {VINTEX_INVENTORY_UNITS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* SECTION 2: INDUSTRIAL TECHNICAL SPECIFICATIONS */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-2 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
+                    <i className="fa-solid fa-microchip text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      2. Industrial Specs & Description
+                    </h4>
+                  </div>
+                  <textarea
+                    rows={3}
+                    placeholder="e.g. 3 KW 415V, PREMIUM QUALITY MOTOR COPER WINDING , SINGLE SPEED , AXIAL FAN TYPE , 4 SIDE 100 MM THECKNES BEST QUALITY COOLING PADS, SUMMERSIBLE 75W PUMP, AUTO DRAIN & WATER BALL AUTO SYSTEM"
+                    value={productFormDescription}
+                    onChange={(e) => setProductFormDescription(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-xs font-mono font-medium text-slate-900 focus:outline-none focus:border-indigo-600 placeholder:text-slate-400 placeholder:font-sans leading-relaxed"
+                  />
+                </div>
+
+                {/* SECTION 3: STOCK & WAREHOUSE LOCATION */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
+                    <i className="fa-solid fa-warehouse text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      3. Stock & Inventory Control
+                    </h4>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Initial / Current Stock ({productFormUnit}) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        required
+                        min="0"
+                        placeholder="e.g. 10"
+                        value={productFormCurrentStock}
+                        onChange={(e) => setProductFormCurrentStock(e.target.value)}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Minimum Reorder Alert Threshold
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="e.g. 2"
+                        value={productFormMinAlert}
+                        onChange={(e) => setProductFormMinAlert(e.target.value)}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Linked Vendor / Supplier
+                      </label>
+                      <select
+                        value={productFormVendorId}
+                        onChange={(e) => {
+                          const vId = e.target.value;
+                          setProductFormVendorId(vId);
+                          const vObj = vendors.find((v) => v.id === vId);
+                          if (vObj) setProductFormSupplier(vObj.name);
+                        }}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                      >
+                        <option value="">-- Direct Vintex Manufacturing --</option>
+                        {vendors.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            🏭 {v.name} ({v.city || "Malegaon"})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Warehouse Bay / Rack</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Main Plant - Bay A1"
+                        value={productFormLocation}
+                        onChange={(e) => setProductFormLocation(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2 text-xs font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* SECTION 4: PRICING & GST TAX CALCULATIONS */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-200/80 pb-2">
+                    <i className="fa-solid fa-calculator text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      4. Pricing & Tax Calculation (GST)
+                    </h4>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Base Selling Rate (₹) <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        required
+                        placeholder="e.g. 65000"
+                        value={productFormSellingRate}
+                        onChange={(e) => setProductFormSellingRate(e.target.value)}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="w-full bg-white border border-slate-300 focus:border-indigo-600 rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">GST Rate %</label>
+                      <select
+                        value={productFormGstRate}
+                        onChange={(e) => setProductFormGstRate(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                      >
+                        <option value="18">18% GST (Standard)</option>
+                        <option value="12">12% GST</option>
+                        <option value="28">28% GST</option>
+                        <option value="5">5% GST</option>
+                        <option value="0">0% (Tax Exempt)</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Purchase Cost (₹)</label>
+                      <input
+                        type="number"
+                        placeholder="e.g. 50000"
+                        value={productFormPurchaseRate}
+                        onChange={(e) => setProductFormPurchaseRate(e.target.value)}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="w-full bg-white border border-slate-300 focus:border-indigo-600 rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Dynamic Tax Breakdown Preview Card */}
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-1 text-emerald-950">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-emerald-800 font-bold">Base Selling Price:</span>
+                      <span className="font-mono font-bold">₹{Number(productFormSellingRate || 0).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-emerald-800 font-bold">+ GST ({productFormGstRate}%):</span>
+                      <span className="font-mono font-bold">
+                        ₹{Math.round(((Number(productFormSellingRate) || 0) * (Number(productFormGstRate) / 100)) * 100 / 100).toLocaleString("en-IN")}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs font-black pt-1.5 border-t border-emerald-200 text-emerald-900">
+                      <span>Total Final Selling Price:</span>
+                      <span className="font-mono text-sm text-emerald-700">
+                        ₹{(
+                          (Number(productFormSellingRate) || 0) +
+                          Math.round(((Number(productFormSellingRate) || 0) * (Number(productFormGstRate) / 100)) * 100 / 100)
+                        ).toLocaleString("en-IN")}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Error Banner */}
+                {productFormError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold p-3.5 rounded-2xl flex items-center space-x-2 animate-in fade-in">
+                    <i className="fa-solid fa-triangle-exclamation text-rose-600 text-sm flex-shrink-0"></i>
+                    <span>{productFormError}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Drawer Footer */}
+              <div className="px-4 py-3.5 sm:px-5 sm:py-4 border-t border-slate-200 bg-slate-50 flex items-center space-x-3 sticky bottom-0 z-20">
+                <button
+                  type="button"
+                  disabled={isSavingProduct}
+                  onClick={() => setIsProductDrawerOpen(false)}
+                  className="flex-1 bg-white hover:bg-slate-100 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-300 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isSavingProduct}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingProduct ? (
+                    <>
+                      <i className="fa-solid fa-spinner fa-spin text-xs"></i>
+                      <span>Saving to Inventory...</span>
+                    </>
+                  ) : (
+                    <>
+                      <i className="fa-solid fa-check text-xs"></i>
+                      <span>{editingItem ? "Update Product Record" : "Save & Add to Catalog 🚀"}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 2. ADD / EDIT VENDOR SLIDE-OVER DRAWER */}
+      {isVendorDrawerOpen && (
+        <div className="fixed inset-0 z-50 overflow-hidden bg-slate-900/50 backdrop-blur-xs flex justify-end font-sans animate-in fade-in duration-150">
+          <div
+            className="absolute inset-0"
+            onClick={() => !isSavingVendor && setIsVendorDrawerOpen(false)}
+          />
+
+          <div className="relative w-full sm:max-w-xl bg-white h-full shadow-2xl flex flex-col font-sans border-l border-slate-200 z-10 overflow-hidden animate-in slide-in-from-right duration-200">
+            {/* Header */}
+            <div className="px-4 py-3.5 sm:px-5 sm:py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between sticky top-0 z-20">
+              <div className="flex items-center space-x-3 truncate">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-indigo-600 text-white font-bold text-sm sm:text-base flex items-center justify-center shadow-sm flex-shrink-0">
+                  <i className="fa-solid fa-industry text-sm"></i>
+                </div>
+                <div className="truncate">
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 truncate leading-tight">
+                    {editingVendor ? `Edit Vendor: ${editingVendor.name}` : "Register New Vendor / Supplier"}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 truncate">
+                    Vendor details, GSTIN, PAN, and Bank Accounts for inward procurement
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => !isSavingVendor && setIsVendorDrawerOpen(false)}
+                className="w-8 h-8 rounded-full text-slate-500 hover:text-slate-900 hover:bg-slate-200/80 flex items-center justify-center text-sm transition-colors cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveVendorSubmit} className="flex-1 flex flex-col justify-between overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+                {/* Basic Vendor Info */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
+                    <i className="fa-solid fa-building text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      1. Vendor Company & Contact
+                    </h4>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Vendor / Company Name <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Jindal Steel & Sheets Ltd."
+                      value={vendorFormName}
+                      onChange={(e) => setVendorFormName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Contact Person</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Rajesh Sharma"
+                        value={vendorFormContact}
+                        onChange={(e) => setVendorFormContact(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Phone Number <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        placeholder="e.g. 9876543210"
+                        value={vendorFormPhone}
+                        onChange={(e) => setVendorFormPhone(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Email Address</label>
+                      <input
+                        type="email"
+                        placeholder="e.g. sales@vendor.com"
+                        value={vendorFormEmail}
+                        onChange={(e) => setVendorFormEmail(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">GSTIN</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 27FGZPS8932R1ZN"
+                        value={vendorFormGstin}
+                        onChange={(e) => setVendorFormGstin(e.target.value.toUpperCase())}
+                        className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all placeholder:text-slate-400 uppercase"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">PAN Number</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. FGZPS8932R"
+                      value={vendorFormPan}
+                      onChange={(e) => setVendorFormPan(e.target.value.toUpperCase())}
+                      className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none transition-all uppercase"
+                    />
+                  </div>
+                </div>
+
+                {/* Vendor Address */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-100 pb-2">
+                    <i className="fa-solid fa-location-dot text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      2. Address & Place of Business
+                    </h4>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">Street Address</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Industrial Area, Plot 42, MIDC"
+                      value={vendorFormAddress}
+                      onChange={(e) => setVendorFormAddress(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 focus:border-indigo-600 focus:bg-white rounded-xl px-3.5 py-2 text-xs font-bold text-slate-900 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-700 block">City</label>
+                      <input
+                        type="text"
+                        placeholder="Malegaon"
+                        value={vendorFormCity}
+                        onChange={(e) => setVendorFormCity(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-900 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-700 block">State</label>
+                      <input
+                        type="text"
+                        placeholder="Maharashtra"
+                        value={vendorFormState}
+                        onChange={(e) => setVendorFormState(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-900 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-700 block">Pincode</label>
+                      <input
+                        type="text"
+                        placeholder="423203"
+                        value={vendorFormPincode}
+                        onChange={(e) => setVendorFormPincode(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Vendor Bank Details */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3.5 shadow-2xs">
+                  <div className="flex items-center space-x-2 border-b border-slate-200/80 pb-2">
+                    <i className="fa-solid fa-building-columns text-indigo-600 text-xs"></i>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                      3. Bank Details for Payment
+                    </h4>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Bank Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Axis Bank, Malegaon"
+                        value={vendorFormBankName}
+                        onChange={(e) => setVendorFormBankName(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-900 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">Account Number</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 91902002803808042"
+                        value={vendorFormBankAcc}
+                        onChange={(e) => setVendorFormBankAcc(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">IFSC Code</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. UTIB0001240"
+                      value={vendorFormBankIfsc}
+                      onChange={(e) => setVendorFormBankIfsc(e.target.value.toUpperCase())}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none uppercase"
+                    />
+                  </div>
+                </div>
+
+                {vendorFormError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold p-3.5 rounded-2xl flex items-center space-x-2">
+                    <i className="fa-solid fa-triangle-exclamation text-rose-600 text-sm"></i>
+                    <span>{vendorFormError}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-4 py-3.5 sm:px-5 sm:py-4 border-t border-slate-200 bg-slate-50 flex items-center space-x-3 sticky bottom-0 z-20">
+                <button
+                  type="button"
+                  disabled={isSavingVendor}
+                  onClick={() => setIsVendorDrawerOpen(false)}
+                  className="flex-1 bg-white hover:bg-slate-100 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-300 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isSavingVendor}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingVendor ? (
+                    <>
+                      <i className="fa-solid fa-spinner fa-spin text-xs"></i>
+                      <span>Saving Vendor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <i className="fa-solid fa-check text-xs"></i>
+                      <span>{editingVendor ? "Update Vendor" : "Register Vendor 🚀"}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 3. STOCK IN (PURCHASE) MODAL */}
+      {isStockInModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0" onClick={() => !isProcessingStock && setIsStockInModalOpen(false)} />
+          <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl p-6 sm:p-7 space-y-5 border border-slate-200 z-10 font-sans animate-in fade-in zoom-in duration-150">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-black text-base border border-emerald-200">
+                  <i className="fa-solid fa-arrow-down"></i>
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">Stock Inward / Purchase Entry</h3>
+                  <p className="text-xs text-slate-500">Record incoming stock from registered vendor</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => !isProcessingStock && setIsStockInModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 font-bold flex items-center justify-center cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleStockInSubmit} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">Select Product *</label>
+                <select
+                  value={stockInItem?.id || ""}
+                  onChange={(e) => {
+                    const sel = inventoryItems.find((i) => i.id === e.target.value);
+                    setStockInItem(sel || null);
+                    if (sel) {
+                      setStockInRate(sel.purchaseRate.toString());
+                      setStockInVendorId(sel.vendorId || "");
+                      const vMatch = vendors.find((v) => v.id === sel.vendorId);
+                      setStockInVendor(vMatch ? vMatch.name : (sel.supplierName || ""));
+                    }
+                  }}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-900 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                >
+                  {inventoryItems.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      [{item.sku}] {item.name} (Current: {item.currentStock} {item.unit})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">Inward Quantity (+) *</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    placeholder="e.g. 5"
+                    value={stockInQty}
+                    onChange={(e) => setStockInQty(e.target.value)}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-indigo-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">Purchase Rate / Unit (₹)</label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 50000"
+                    value={stockInRate}
+                    onChange={(e) => setStockInRate(e.target.value)}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-indigo-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">Vendor / Supplier</label>
+                  <select
+                    value={stockInVendorId}
+                    onChange={(e) => {
+                      const vId = e.target.value;
+                      setStockInVendorId(vId);
+                      const vObj = vendors.find((v) => v.id === vId);
+                      if (vObj) setStockInVendor(vObj.name);
+                    }}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none"
+                  >
+                    <option value="">-- Direct Supplier --</option>
+                    {vendors.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">PO / Ref Number</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. PO-8921"
+                    value={stockInRefNo}
+                    onChange={(e) => setStockInRefNo(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">Notes / Reason</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Received new shipment batch from vendor"
+                  value={stockInNotes}
+                  onChange={(e) => setStockInNotes(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center space-x-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="genBill"
+                  checked={stockInGenerateBill}
+                  onChange={(e) => setStockInGenerateBill(e.target.checked)}
+                  className="w-4 h-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                />
+                <label htmlFor="genBill" className="text-xs font-bold text-slate-700 cursor-pointer">
+                  Auto-generate formal Purchase Bill & Inward Slip
+                </label>
+              </div>
+
+              {stockModalError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold p-3 rounded-xl">
+                  {stockModalError}
+                </div>
+              )}
+
+              <div className="flex items-center space-x-3 pt-2">
+                <button
+                  type="button"
+                  disabled={isProcessingStock}
+                  onClick={() => setIsStockInModalOpen(false)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-200 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isProcessingStock}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <i className={`fa-solid ${isProcessingStock ? "fa-spinner fa-spin" : "fa-arrow-down"}`}></i>
+                  <span>{isProcessingStock ? "Adding..." : "Confirm Stock In (+)"}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 4. STOCK OUT (SALE) MODAL */}
+      {isStockOutModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0" onClick={() => !isProcessingStock && setIsStockOutModalOpen(false)} />
+          <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl p-6 sm:p-7 space-y-5 border border-slate-200 z-10 font-sans animate-in fade-in zoom-in duration-150">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-purple-50 text-purple-700 flex items-center justify-center font-black text-base border border-purple-200">
+                  <i className="fa-solid fa-arrow-up"></i>
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">Stock Outward / Client Sale</h3>
+                  <p className="text-xs text-slate-500">Deduct stock and record customer sale invoice</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => !isProcessingStock && setIsStockOutModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 font-bold flex items-center justify-center cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleStockOutSubmit} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">Select Product *</label>
+                <select
+                  value={stockOutItem?.id || ""}
+                  onChange={(e) => {
+                    const sel = inventoryItems.find((i) => i.id === e.target.value);
+                    setStockOutItem(sel || null);
+                    if (sel) setStockOutRate(sel.sellingRate.toString());
+                  }}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-900 focus:outline-none focus:border-indigo-600 cursor-pointer"
+                >
+                  {inventoryItems.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      [{item.sku}] {item.name} (Available: {item.currentStock} {item.unit})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Sale Quantity (-) *
+                    {stockOutItem && (
+                      <span className="text-[10px] text-slate-500 font-normal ml-1">
+                        (Max: {stockOutItem.currentStock})
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    max={stockOutItem ? stockOutItem.currentStock : undefined}
+                    placeholder="e.g. 1"
+                    value={stockOutQty}
+                    onChange={(e) => setStockOutQty(e.target.value)}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-indigo-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">Selling Rate / Unit (₹)</label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 65000"
+                    value={stockOutRate}
+                    onChange={(e) => setStockOutRate(e.target.value)}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-indigo-600 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">Customer / Client Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Rajesh Kumar"
+                    value={stockOutCustomer}
+                    onChange={(e) => setStockOutCustomer(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">Invoice / Challan #</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. INV-9021"
+                    value={stockOutInvoiceNo}
+                    onChange={(e) => setStockOutInvoiceNo(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">Customer Phone / Contact</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 9876543210"
+                  value={stockOutCustomerPhone}
+                  onChange={(e) => setStockOutCustomerPhone(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">Remarks / Project Details</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Commercial showroom ventilation installation order"
+                  value={stockOutNotes}
+                  onChange={(e) => setStockOutNotes(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none"
+                />
+              </div>
+
+              {stockModalError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold p-3 rounded-xl">
+                  {stockModalError}
+                </div>
+              )}
+
+              <div className="flex items-center space-x-3 pt-2">
+                <button
+                  type="button"
+                  disabled={isProcessingStock}
+                  onClick={() => setIsStockOutModalOpen(false)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-200 cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isProcessingStock}
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <i className={`fa-solid ${isProcessingStock ? "fa-spinner fa-spin" : "fa-arrow-up"}`}></i>
+                  <span>{isProcessingStock ? "Deducting..." : "Confirm Stock Out (-)"}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* QUOTATION DRAWER REMOVED - DIRECT NAV TO FULL PAGE ROUTE /crms/quotations/create */}
+
+      {/* 6. EXACT VINTEX AIR QUOTATION INVOICE VIEW / PRINT MODAL */}
+      <QuotationInvoicePrintModal
+        quotation={viewingQuotation}
+        isOpen={isQuotationViewOpen}
+        onClose={() => setIsQuotationViewOpen(false)}
+        onShareWhatsApp={handleShareQuotationWhatsApp}
+      />
+
+
+      {/* 7. PURCHASE BILL VIEW MODAL */}
+      {isPurchaseBillViewOpen && viewingPurchaseBill && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0 print:hidden" onClick={() => setIsPurchaseBillViewOpen(false)} />
+          <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl p-6 sm:p-8 space-y-5 border border-slate-200 z-10 font-sans">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <h3 className="text-base font-extrabold text-slate-900">Purchase Inward Bill #{viewingPurchaseBill.billNo}</h3>
+              <button
+                type="button"
+                onClick={() => setIsPurchaseBillViewOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-900 font-bold flex items-center justify-center"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="border border-slate-200 rounded-2xl p-4 space-y-3 bg-slate-50/50 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 block uppercase">Vendor / Supplier:</span>
+                  <span className="font-extrabold text-slate-900 text-sm">{viewingPurchaseBill.vendorName}</span>
+                  {viewingPurchaseBill.vendorGstin && <p className="font-mono text-slate-600">GSTIN: {viewingPurchaseBill.vendorGstin}</p>}
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] font-bold text-slate-400 block uppercase">Bill Date & Ref:</span>
+                  <span className="font-bold text-slate-900">{viewingPurchaseBill.billDate}</span>
+                  <p className="font-mono text-slate-500">{viewingPurchaseBill.poReference}</p>
+                </div>
+              </div>
+
+              <table className="w-full text-left text-xs bg-white rounded-xl overflow-hidden border border-slate-200">
+                <thead className="bg-slate-100 text-slate-600 font-bold text-[10px] uppercase">
+                  <tr>
+                    <th className="p-2">Item</th>
+                    <th className="p-2 text-center">Qty</th>
+                    <th className="p-2 text-right">Rate (₹)</th>
+                    <th className="p-2 text-right">Total (₹)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {viewingPurchaseBill.items.map((it, idx) => (
+                    <tr key={idx}>
+                      <td className="p-2 font-bold text-slate-800">{it.name}</td>
+                      <td className="p-2 text-center font-mono">{it.qty} {it.unit}</td>
+                      <td className="p-2 text-right font-mono">₹{it.purchaseRate.toLocaleString("en-IN")}</td>
+                      <td className="p-2 text-right font-mono font-bold text-emerald-700">₹{it.totalAmount.toLocaleString("en-IN")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="text-right font-black text-sm text-emerald-700 pt-2 border-t border-slate-200">
+                Grand Total Payable: ₹{viewingPurchaseBill.totalAmount.toLocaleString("en-IN")}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 8. DELETE VENDOR MODAL */}
+      {vendorToDelete && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0" onClick={() => !isDeletingVendor && setVendorToDelete(null)} />
+          <div className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-6 space-y-4 border border-slate-200 z-10 font-sans">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 border border-rose-200 flex items-center justify-center text-xl mx-auto">
+              <i className="fa-solid fa-industry"></i>
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-extrabold text-slate-900">Delete Vendor Record?</h3>
+              <p className="text-xs text-slate-600">
+                Are you sure you want to delete <strong className="text-slate-900 font-extrabold">{vendorToDelete.name}</strong> from your vendor registry?
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingVendor}
+                onClick={() => setVendorToDelete(null)}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-200 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeletingVendor}
+                onClick={handleDeleteVendor}
+                className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <i className={`fa-solid fa-trash-can ${isDeletingVendor ? "fa-spin" : ""}`}></i>
+                <span>{isDeletingVendor ? "Deleting..." : "Yes, Delete Vendor"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 9. DELETE QUOTATION MODAL */}
+      {quotationToDelete && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0" onClick={() => !isDeletingQuotation && setQuotationToDelete(null)} />
+          <div className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-6 space-y-4 border border-slate-200 z-10 font-sans">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 border border-rose-200 flex items-center justify-center text-xl mx-auto">
+              <i className="fa-solid fa-file-invoice"></i>
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-extrabold text-slate-900">Delete Quotation #{quotationToDelete.quotationNo}?</h3>
+              <p className="text-xs text-slate-600">
+                Are you sure you want to delete this estimate for <strong className="text-slate-900 font-extrabold">{quotationToDelete.clientName}</strong>? If stock was deducted, it will be automatically restored back to inventory.
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingQuotation}
+                onClick={() => setQuotationToDelete(null)}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-200 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeletingQuotation}
+                onClick={handleDeleteQuotationSubmit}
+                className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <i className={`fa-solid fa-trash-can ${isDeletingQuotation ? "fa-spin" : ""}`}></i>
+                <span>{isDeletingQuotation ? "Deleting..." : "Yes, Delete & Restore Stock"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 10. DELETE PRODUCT CONFIRMATION MODAL */}
+      {itemToDelete && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0" onClick={() => !isDeletingProduct && setItemToDelete(null)} />
+          <div className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl p-6 space-y-4 border border-slate-200 z-10 font-sans animate-in fade-in zoom-in duration-150">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 border border-rose-200 flex items-center justify-center text-xl mx-auto">
+              <i className="fa-solid fa-trash-can"></i>
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-extrabold text-slate-900">Delete Product from Catalog?</h3>
+              <p className="text-xs text-slate-600">
+                Are you sure you want to delete <strong className="font-mono text-purple-900 font-extrabold">[{itemToDelete.sku}] {itemToDelete.name}</strong>?
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingProduct}
+                onClick={() => setItemToDelete(null)}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs py-2.5 rounded-xl transition-all border border-slate-200 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeletingProduct}
+                onClick={handleDeleteProductSubmit}
+                className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md transition-all flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <i className={`fa-solid fa-trash-can ${isDeletingProduct ? "fa-spin" : ""}`}></i>
+                <span>{isDeletingProduct ? "Deleting..." : "Yes, Delete Product"}</span>
               </button>
             </div>
           </div>
